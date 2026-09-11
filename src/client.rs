@@ -353,8 +353,7 @@ fn retry_delay(headers: &HeaderMap, attempt: u8) -> Duration {
             }
         }
     }
-    Duration::from_millis(100_u64.saturating_mul(1_u64 << attempt.min(4)))
-        .min(MAX_BACKOFF_DELAY)
+    Duration::from_millis(100_u64.saturating_mul(1_u64 << attempt.min(4))).min(MAX_BACKOFF_DELAY)
 }
 
 fn api_error(

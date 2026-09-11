@@ -268,7 +268,10 @@ async fn validates_contract_constraints_before_network() {
     assert!(matches!(
         client
             .templates()
-            .publish("11111111-1111-1111-1111-111111111111", Some(&incomplete_precondition))
+            .publish(
+                "11111111-1111-1111-1111-111111111111",
+                Some(&incomplete_precondition),
+            )
             .await,
         Err(Error::Validation(_))
     ));
