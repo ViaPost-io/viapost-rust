@@ -1,0 +1,28 @@
+name: Contract drift
+
+on:
+  schedule:
+    - cron: '17 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - name: Compare with canonical main contract
+        run: |
+          curl --fail --location --silent --show-error \
+            https://raw.githubusercontent.com/ViaPost-io/base-code/main/docs/openapi/public.yaml \
+            --output /tmp/viapost-public.yaml
+          if ! cmp -s openapi.yaml /tmp/viapost-public.yaml; then
+            echo 'The canonical public contract changed; update the SDK surface and vendored OpenAPI.' >&2
+            exit 1
+          fi
+          scripts/check-openapi.sh openapi.yaml
+
