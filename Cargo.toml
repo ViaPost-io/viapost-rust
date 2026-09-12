@@ -1,0 +1,48 @@
+[package]
+name = "viapost"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Official async Rust SDK for the ViaPost email API"
+license = "MIT"
+repository = "https://github.com/ViaPost-io/viapost-rust"
+homepage = "https://viapost.io"
+documentation = "https://docs.rs/viapost"
+readme = "README.md"
+keywords = ["email", "api", "sdk", "viapost"]
+categories = ["api-bindings", "email"]
+include = [
+    "src/**",
+    "tests/**",
+    "openapi.yaml",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+]
+
+[dependencies]
+futures-util = "=0.3.31"
+httpdate = "=1.0.3"
+percent-encoding = "=2.3.2"
+reqwest = { version = "=0.13.5", default-features = false, features = ["json", "query", "stream", "gzip", "brotli", "deflate", "rustls"] }
+serde = { version = "=1.0.219", features = ["derive"] }
+serde_json = "=1.0.143"
+thiserror = "=2.0.16"
+tokio = { version = "=1.47.1", features = ["time"] }
+url = "=2.5.8"
+
+[dev-dependencies]
+tokio = { version = "=1.47.1", features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+missing_errors_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+trivially_copy_pass_by_ref = "allow"
+wildcard_imports = "allow"
