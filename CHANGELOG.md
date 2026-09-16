@@ -4,6 +4,14 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-16
+
+### Fixed
+
+- Bound transitive ICU, IDNA and yoke resolution to versions compatible with the documented Rust
+  1.85 MSRV.
+- Validate a lockfile-free consumer on the MSRV in CI and before every release.
+
 ## [0.1.0] - 2026-09-16
 
 ### Added
@@ -17,5 +25,6 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Vendored OpenAPI contract with deterministic drift verification.
 - GitHub-first release archives, checksums and build provenance.
 
-[Unreleased]: https://github.com/ViaPost-io/viapost-rust/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ViaPost-io/viapost-rust/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/ViaPost-io/viapost-rust/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ViaPost-io/viapost-rust/releases/tag/v0.1.0

@@ -1469,10 +1469,18 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
 name = "viapost"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-util",
  "httpdate",
+ "icu_collections",
+ "icu_locale_core",
+ "icu_normalizer",
+ "icu_normalizer_data",
+ "icu_properties",
+ "icu_properties_data",
+ "icu_provider",
+ "idna_adapter",
  "percent-encoding",
  "reqwest",
  "serde",
@@ -1480,6 +1488,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "url",
+ "yoke-derive",
 ]
 
 [[package]]
