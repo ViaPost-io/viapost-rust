@@ -97,9 +97,26 @@ impl ViaPost {
         body: Option<Value>,
         extra_headers: Option<HeaderMap>,
     ) -> Result<T, Error> {
+        let bytes = self
+            .request_bytes(method, path, query, body, extra_headers)
+            .await?;
+        if bytes.is_empty() {
+            return serde_json::from_value(Value::Null).map_err(Error::Decode);
+        }
+        serde_json::from_slice(&bytes).map_err(Error::Decode)
+    }
+
+    pub(crate) async fn request_bytes(
+        &self,
+        method: Method,
+        path: &str,
+        query: Option<Value>,
+        body: Option<Value>,
+        extra_headers: Option<HeaderMap>,
+    ) -> Result<Vec<u8>, Error> {
         tokio::time::timeout(
             self.timeout,
-            self.request_with_retries(method, path, query, body, extra_headers),
+            self.request_bytes_with_retries(method, path, query, body, extra_headers),
         )
         .await
         .map_err(|_| Error::Timeout {
@@ -107,14 +124,14 @@ impl ViaPost {
         })?
     }
 
-    async fn request_with_retries<T: DeserializeOwned>(
+    async fn request_bytes_with_retries(
         &self,
         method: Method,
         path: &str,
         query: Option<Value>,
         body: Option<Value>,
         extra_headers: Option<HeaderMap>,
-    ) -> Result<T, Error> {
+    ) -> Result<Vec<u8>, Error> {
         let url = self
             .base_url
             .join(path.trim_start_matches('/'))
@@ -159,10 +176,7 @@ impl ViaPost {
                     .and_then(|value| value.strip_prefix("Bearer "));
                 return Err(api_error(status, &response_headers, &bytes, api_key));
             }
-            if bytes.is_empty() {
-                return serde_json::from_value(Value::Null).map_err(Error::Decode);
-            }
-            return serde_json::from_slice(&bytes).map_err(Error::Decode);
+            return Ok(bytes);
         }
     }
 

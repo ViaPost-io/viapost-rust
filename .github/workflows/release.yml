@@ -1,8 +1,8 @@
 name: Release Rust crate
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          ref: ${{ github.event_name == 'push' && github.sha || inputs.tag }}
           fetch-depth: 0
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
@@ -37,15 +37,19 @@ jobs:
         run: cargo install cargo-audit --version 0.22.1 --locked
       - name: Require exact release tag commit on main
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+          EVENT_SHA: ${{ github.event_name == 'push' && github.sha || '' }}
         run: |
           git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
           test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          if [ -n "$EVENT_SHA" ]; then
+            test "$(git rev-parse HEAD)" = "$EVENT_SHA"
+          fi
           git fetch --no-tags origin main
           git merge-base --is-ancestor HEAD origin/main
       - name: Verify tag and package
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
         run: |
           scripts/check-release-tag.sh "$RELEASE_TAG"
           scripts/check-openapi.sh
@@ -60,8 +64,8 @@ jobs:
           mkdir -p dist
           cp target/package/viapost-*.crate dist/
           cd dist
-          sha256sum viapost-*.crate > SHA256SUMS
-          chmod a-w viapost-*.crate SHA256SUMS
+          sha256sum -- ./viapost-*.crate > SHA256SUMS
+          chmod a-w -- ./viapost-*.crate SHA256SUMS
       - name: Smoke-test packaged source as an isolated consumer
         run: |
           mkdir -p /tmp/viapost-rust-consumer
@@ -74,24 +78,6 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 1
-
-  attach-to-github-release:
-    needs: verify-and-build
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: write
-    steps:
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with:
-          name: rust-distribution
-          path: dist
-      - name: Attach crate and checksum
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
-        run: gh release upload "$RELEASE_TAG" dist/*
 
   attest-build-provenance:
     needs: verify-and-build
@@ -108,26 +94,86 @@ jobs:
           path: dist
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/viapost-*.crate
+          subject-path: dist/*
 
-  publish-to-crates-io:
-    needs: [verify-and-build, attach-to-github-release, attest-build-provenance]
-    if: github.event_name == 'workflow_dispatch' && inputs.publish_crates_io == true
+  publish-github-release:
+    needs: [verify-and-build, attest-build-provenance]
     runs-on: ubuntu-latest
-    environment: crates.io
     permissions:
       actions: read
-      id-token: write
+      contents: write
     steps:
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: rust-distribution
           path: dist
+      - name: Publish verified crate and checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            release_is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"
+            published="$(mktemp -d)"
+            gh release download "$RELEASE_TAG" --dir "$published"
+            diff -q "$published/SHA256SUMS" dist/SHA256SUMS
+            (cd "$published" && sha256sum -c SHA256SUMS)
+            (cd dist && sha256sum -c SHA256SUMS)
+            test "$(find "$published" -maxdepth 1 -type f -printf '%f\n' | sort)" = \
+              "$(find dist -maxdepth 1 -type f -printf '%f\n' | sort)"
+            for artifact in dist/*; do
+              cmp --silent "$artifact" "$published/$(basename "$artifact")"
+            done
+            if [ "$release_is_draft" = true ]; then
+              gh release edit "$RELEASE_TAG" --draft=false
+            fi
+          else
+            gh release create "$RELEASE_TAG" dist/* --draft --verify-tag --generate-notes --title "$RELEASE_TAG"
+            gh release edit "$RELEASE_TAG" --draft=false
+          fi
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false
+
+  publish-to-crates-io:
+    needs: publish-github-release
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_crates_io == true
+    runs-on: ubuntu-latest
+    environment: crates.io
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          ref: ${{ github.event_name == 'push' && github.sha || inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: '1.85.1'
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: rust-distribution
+          path: dist
+      - name: Reproduce the attested registry package
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD origin/main
+          scripts/check-release-tag.sh "$RELEASE_TAG"
+          (cd dist && sha256sum -c SHA256SUMS)
+          cargo package --locked
+          attested_package="$(find dist -maxdepth 1 -type f -name 'viapost-*.crate' -print -quit)"
+          reproduced_package="$(find target/package -maxdepth 1 -type f -name 'viapost-*.crate' -print -quit)"
+          test -n "$attested_package"
+          test -n "$reproduced_package"
+          cmp --silent "$attested_package" "$reproduced_package"
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
-          mkdir -p /tmp/viapost-rust-publish
-          tar -xzf dist/viapost-*.crate -C /tmp/viapost-rust-publish
-          cd /tmp/viapost-rust-publish/viapost-*
-          cargo publish --locked --token "$CARGO_REGISTRY_TOKEN"
+          test -n "$CARGO_REGISTRY_TOKEN"
+          cargo publish --locked --no-verify

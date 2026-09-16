@@ -45,11 +45,17 @@ let messages = client.messages().list(viapost::MessageListParams {
     limit: Some(25),
     ..Default::default()
 }).await?;
+let detail = client.messages().retrieve("message-id").await?;
+let submitted_eml = client.messages().raw("message-id").await?;
 let usage = client.usage().retrieve().await?;
-# let _ = (messages, usage);
+# let _ = (messages, detail, submitted_eml, usage);
 # Ok(())
 # }
 ```
+
+Webhooks incluem criação e atualização com versão otimista, listagem e inspeção segura de
+entregas, evento de teste, replay idempotente e rotação de secret. URLs de destino precisam usar
+HTTPS; operações mutáveis que podem ser repetidas exigem uma chave de idempotência explícita.
 
 ### Segurança e retries
 
@@ -78,10 +84,9 @@ may be submitted more than once. Mutating calls are never retried by the SDK.
 ## Contract
 
 `openapi.yaml` is vendored from ViaPost `base-code` commit
-`1daaf57b8c8bb7481b7c8633a68705428de1f90a` with SHA-256
-`d1f223342ad1ca326ba716af6e508c78594e1b108958cce2ec4a1efd31a9773a`.
+`891adebbe79a26178fb780ec986172c890a5e261` with SHA-256
+`cb61b81b3276679426504eae4161e610eb5520aca2cd71cd267ed62628c518e4`.
 
 ## License
 
 [MIT](LICENSE)
-

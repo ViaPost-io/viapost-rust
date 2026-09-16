@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-expected='d1f223342ad1ca326ba716af6e508c78594e1b108958cce2ec4a1efd31a9773a'
-source_commit='1daaf57b8c8bb7481b7c8633a68705428de1f90a'
+expected='cb61b81b3276679426504eae4161e610eb5520aca2cd71cd267ed62628c518e4'
+source_commit='891adebbe79a26178fb780ec986172c890a5e261'
 contract="${1:-openapi.yaml}"
 
 if command -v sha256sum >/dev/null 2>&1; then
@@ -17,4 +17,3 @@ if [ "$actual" != "$expected" ]; then
 fi
 
 printf 'OpenAPI contract verified at source commit %s (%s).\n' "$source_commit" "$actual"
-
