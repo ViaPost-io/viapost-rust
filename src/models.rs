@@ -199,6 +199,34 @@ pub struct Message {
     pub last_error: Option<String>,
 }
 
+#[derive(Clone, Deserialize)]
+pub struct MessageDetail {
+    #[serde(flatten)]
+    pub message: Message,
+    pub body_html: Option<String>,
+    pub body_plain: Option<String>,
+    pub content_status: Option<String>,
+    pub raw_message_api_path: Option<String>,
+    pub content_variant: Option<String>,
+}
+
+impl fmt::Debug for MessageDetail {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MessageDetail")
+            .field("message", &self.message)
+            .field("body_html", &self.body_html.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "body_plain",
+                &self.body_plain.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("content_status", &self.content_status)
+            .field("raw_message_api_path", &self.raw_message_api_path)
+            .field("content_variant", &self.content_variant)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct MessageList {
     pub messages: Vec<Message>,
@@ -497,14 +525,38 @@ impl fmt::Debug for TemplateAssetPolicy {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct WebhookEndpoint {
     pub id: String,
     pub url: String,
     pub event_types: Vec<String>,
     pub enabled: bool,
     pub max_attempts: u64,
+    pub consecutive_failures: u64,
+    pub disabled_at: Option<String>,
+    pub secret_rotated_at: Option<String>,
+    pub version: u64,
     pub created_at: String,
+    pub updated_at: String,
+}
+
+impl fmt::Debug for WebhookEndpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebhookEndpoint")
+            .field("id", &self.id)
+            .field("url", &"[REDACTED]")
+            .field("event_types", &self.event_types)
+            .field("enabled", &self.enabled)
+            .field("max_attempts", &self.max_attempts)
+            .field("consecutive_failures", &self.consecutive_failures)
+            .field("disabled_at", &self.disabled_at)
+            .field("secret_rotated_at", &self.secret_rotated_at)
+            .field("version", &self.version)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -512,10 +564,20 @@ pub struct WebhookList {
     pub webhooks: Vec<WebhookEndpoint>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct CreateWebhookRequest {
     pub url: String,
     pub event_types: Vec<String>,
+}
+
+impl fmt::Debug for CreateWebhookRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CreateWebhookRequest")
+            .field("url", &"[REDACTED]")
+            .field("event_types", &self.event_types)
+            .finish()
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -530,6 +592,112 @@ impl fmt::Debug for CreateWebhookResponse {
             .debug_struct("CreateWebhookResponse")
             .field("endpoint", &self.endpoint)
             .field("secret", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateWebhookRequest {
+    pub expected_version: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_types: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct WebhookDeliveryListParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebhookDeliverySummary {
+    pub delivery_id: String,
+    pub event_type: String,
+    pub status: String,
+    pub attempt_count: u64,
+    pub created_at: String,
+    pub updated_at: String,
+    pub next_retry_at: Option<String>,
+    pub delivered_at: Option<String>,
+    pub last_response_code: Option<u16>,
+    pub last_duration_ms: Option<u64>,
+    pub is_test: bool,
+    pub replay_of_delivery_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebhookDeliveryPage {
+    pub data: Vec<WebhookDeliverySummary>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebhookDeliveryAttempt {
+    pub attempt: u64,
+    pub status: String,
+    pub response_code: Option<u16>,
+    pub duration_ms: Option<u64>,
+    pub attempted_at: String,
+    pub next_retry_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebhookPayloadRedacted {
+    pub event_type: Option<String>,
+    pub message_id: Option<String>,
+    pub inbound_message_id: Option<String>,
+    pub occurred_at: Option<String>,
+    pub test: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebhookDeliveryDetail {
+    #[serde(flatten)]
+    pub summary: WebhookDeliverySummary,
+    pub payload_redacted: WebhookPayloadRedacted,
+    pub attempts: Vec<WebhookDeliveryAttempt>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebhookTestAccepted {
+    pub delivery_id: String,
+    pub status: String,
+    pub created_at: String,
+    pub is_test: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebhookReplayAccepted {
+    pub delivery_id: String,
+    pub status: String,
+    pub created_at: String,
+    pub source_delivery_id: String,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct RotateWebhookSecretResponse {
+    pub endpoint: WebhookEndpoint,
+    pub secret: Option<String>,
+    pub rotated_at: String,
+}
+
+impl fmt::Debug for RotateWebhookSecretResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RotateWebhookSecretResponse")
+            .field("endpoint", &self.endpoint)
+            .field("secret", &self.secret.as_ref().map(|_| "[REDACTED]"))
+            .field("rotated_at", &self.rotated_at)
             .finish()
     }
 }

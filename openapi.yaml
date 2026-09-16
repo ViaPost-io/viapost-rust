@@ -52,6 +52,10 @@ paths:
       responses:
         '201':
           description: Sucesso
+          headers:
+            Cache-Control:
+              schema: { type: string, const: 'private, no-store' }
+              description: Impede cache da resposta que contém o secret inicial.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Automation' }
@@ -895,6 +899,84 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PublicStatusError' }
+  /v1/status/subscriptions:
+    post:
+      operationId: postStatusSubscriptions
+      tags: [Public Status]
+      summary: Solicita inscrição nas comunicações da página de status
+      description: |
+        Disponível somente em `status.viapost.io`. Para todo e-mail sintaticamente válido,
+        retorna a mesma resposta `202`, independentemente de já existir uma inscrição.
+      servers:
+        - url: https://status.viapost.io
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StatusSubscriptionRequest' }
+      responses:
+        '202':
+          description: Solicitação aceita; a resposta não revela se o e-mail já estava inscrito.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { description: A rota só é publicada no host status.viapost.io. }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /v1/status/subscriptions/confirm:
+    post:
+      operationId: postStatusSubscriptionsConfirm
+      tags: [Public Status]
+      summary: Confirma uma inscrição na página de status
+      description: |
+        Disponível somente em `status.viapost.io`. A confirmação é idempotente e retorna a
+        mesma resposta genérica quando o token válido já foi consumido.
+      servers:
+        - url: https://status.viapost.io
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StatusSubscriptionTokenRequest' }
+      responses:
+        '200':
+          description: Confirmação processada de forma idempotente.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { description: A rota só é publicada no host status.viapost.io. }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /v1/status/subscriptions/unsubscribe:
+    post:
+      operationId: postStatusSubscriptionsUnsubscribe
+      tags: [Public Status]
+      summary: Cancela uma inscrição na página de status
+      description: |
+        Disponível somente em `status.viapost.io`. O cancelamento é idempotente e retorna a
+        mesma resposta genérica quando o token válido já foi consumido.
+      servers:
+        - url: https://status.viapost.io
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StatusSubscriptionTokenRequest' }
+      responses:
+        '200':
+          description: Cancelamento processado de forma idempotente.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessageResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { description: A rota só é publicada no host status.viapost.io. }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
   /v1/inbound-messages:
     get:
       operationId: getInboundMessages
@@ -951,6 +1033,49 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/InternalError' }
+  /v1/inbound-messages/{id}/raw:
+    get:
+      operationId: getInboundMessagesIdRaw
+      tags: [Inbound Messages]
+      summary: Baixa o arquivo RFC 5322 recebido
+      description: |
+        Retorna o `.eml` bruto exatamente como recebido. A autorização e o isolamento por tenant
+        são reavaliados em cada download; a URL relativa não é um bearer token e não pode ser
+        compartilhada como uma URL pré-assinada. O conteúdo pode deixar de estar disponível por
+        expurgo ou falha transitória do armazenamento, sem remover os metadados da mensagem.
+      security:
+        - bearerApiKey: []
+        - sessionCookie: []
+      x-viapost-scope: 'inbound:read'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Arquivo `.eml` recebido.
+          headers:
+            Cache-Control:
+              description: Impede armazenamento de conteúdo sensível por caches compartilhados ou privados.
+              schema: { type: string, const: 'private, no-store' }
+            Content-Disposition:
+              description: Força download com nome de arquivo derivado exclusivamente do ID da mensagem.
+              schema: { type: string, example: 'attachment; filename="00000000-0000-0000-0000-000000000000.eml"' }
+            X-Content-Type-Options:
+              description: Impede MIME sniffing no navegador.
+              schema: { type: string, const: nosniff }
+          content:
+            message/rfc822:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /v1/messages:
     get:
       operationId: getMessages
@@ -1058,6 +1183,10 @@ paths:
       operationId: getMessagesId
       tags: [Messages]
       summary: GET /v1/messages/{id}
+      description: |
+        Retorna metadados com `messages:read`. Para Bearer API Keys, os campos de conteúdo e
+        `raw_message_api_path` só são incluídos quando a chave também possui
+        `messages:content:read`. Sessões autenticadas do painel recebem o conteúdo.
       security:
         - bearerApiKey: []
         - sessionCookie: []
@@ -1072,7 +1201,7 @@ paths:
           description: Sucesso
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Message' }
+              schema: { $ref: '#/components/schemas/MessageDetail' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -1080,6 +1209,50 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/InternalError' }
+  /v1/messages/{id}/raw:
+    get:
+      operationId: getMessagesIdRaw
+      tags: [Messages]
+      summary: Baixa o arquivo RFC 5322 submetido
+      description: |
+        Retorna o `.eml` armazenado no momento da submissão, antes da reescrita de links e pixel de
+        tracking e antes da assinatura DKIM aplicada pelo MTA. Portanto, este arquivo é evidência do
+        conteúdo submetido, não uma cópia byte a byte da mensagem entregue ao destinatário. A
+        autorização e o isolamento por tenant são reavaliados em cada download.
+      security:
+        - bearerApiKey: []
+        - sessionCookie: []
+      x-viapost-scope: 'messages:content:read'
+      x-viapost-required-scopes: ['messages:read', 'messages:content:read']
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Arquivo `.eml` submetido.
+          headers:
+            Cache-Control:
+              description: Impede armazenamento de conteúdo sensível por caches compartilhados ou privados.
+              schema: { type: string, const: 'private, no-store' }
+            Content-Disposition:
+              description: Força download com nome de arquivo derivado exclusivamente do ID da mensagem.
+              schema: { type: string, example: 'attachment; filename="00000000-0000-0000-0000-000000000000.eml"' }
+            X-Content-Type-Options:
+              description: Impede MIME sniffing no navegador.
+              schema: { type: string, const: nosniff }
+          content:
+            message/rfc822:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /v1/messages/{id}/events:
     get:
       operationId: getMessagesIdEvents
@@ -1261,8 +1434,11 @@ paths:
         - { $ref: '#/components/parameters/AutomationLimit' }
         - { name: search, in: query, schema: { type: string } }
       responses:
-        '204':
-          description: Sucesso
+        '200':
+          description: Lista paginada de contatos do segmento
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactList' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -1351,6 +1527,210 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SendResult' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /v1/suppressions:
+    get:
+      operationId: getSuppressions
+      tags: [Suppressions]
+      summary: Lista supressões do tenant
+      description: |
+        Retorna somente supressões pertencentes ao tenant autenticado. A paginação usa cursor
+        opaco e exclusivo. O estado é derivado de `released_at` e `expires_at`; por padrão,
+        somente entradas ativas são retornadas. Diagnósticos SMTP brutos não fazem parte deste
+        contrato e nunca são expostos.
+      security:
+        - bearerApiKey: []
+        - sessionCookie: []
+      x-viapost-scope: 'suppressions:read'
+      parameters:
+        - { name: cursor, in: query, schema: { type: string }, description: Cursor opaco retornado em `next_cursor`. }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 50 } }
+        - { name: search, in: query, schema: { type: string, maxLength: 254 }, description: Busca parcial sem diferenciação de maiúsculas no endereço. }
+        - { name: reason, in: query, schema: { $ref: '#/components/schemas/SuppressionReason' } }
+        - { name: state, in: query, schema: { type: string, enum: [active, expired, released, all], default: active } }
+        - { name: origin, in: query, schema: { $ref: '#/components/schemas/SuppressionOrigin' } }
+      responses:
+        '200':
+          description: Página de supressões em ordem decrescente de atualização.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SuppressionList' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    post:
+      operationId: postSuppressions
+      tags: [Suppressions]
+      summary: Adiciona uma supressão manual
+      description: |
+        Normaliza o endereço antes de persistir. `manual` e `invalid_address` são os únicos
+        motivos aceitos neste endpoint; motivos derivados de entrega ou consentimento são
+        administrados automaticamente. Uma entrada encerrada pode ser reativada. Uma entrada
+        ativa idêntica é idempotente, enquanto uma entrada ativa incompatível retorna `409`.
+      security:
+        - bearerApiKey: []
+        - sessionCookie: []
+      x-viapost-scope: 'suppressions:write'
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateSuppressionRequest' }
+      responses:
+        '201':
+          description: Supressão criada ou reativada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Suppression' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /v1/suppressions/import:
+    post:
+      operationId: postSuppressionsImport
+      tags: [Suppressions]
+      summary: Importa supressões manuais de um CSV
+      description: |
+        Recebe UTF-8 com o cabeçalho exato `email,reason,expires_at,note`, no máximo 2 MiB e
+        1.000 registros. `expires_at` e `note` podem ficar vazios. O arquivo inteiro é validado
+        antes da escrita e a importação é atômica: qualquer linha inválida rejeita tudo.
+        Endereços repetidos no mesmo arquivo são contabilizados em `duplicates`.
+      security:
+        - bearerApiKey: []
+        - sessionCookie: []
+      x-viapost-scope: 'suppressions:write'
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Importação concluída atomicamente.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SuppressionImportResult' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /v1/suppressions/export:
+    get:
+      operationId: getSuppressionsExport
+      tags: [Suppressions]
+      summary: Exporta supressões do tenant em CSV
+      description: |
+        Exporta o conjunto filtrado com cabeçalho `email,reason,state,origin,expires_at,note,updated_at`.
+        Valores iniciados por caracteres de fórmula são neutralizados para impedir formula
+        injection ao abrir o arquivo em uma planilha. O CSV nunca contém diagnóstico SMTP bruto.
+      security:
+        - bearerApiKey: []
+        - sessionCookie: []
+      x-viapost-scope: 'suppressions:read'
+      parameters:
+        - { name: search, in: query, schema: { type: string, maxLength: 254 } }
+        - { name: reason, in: query, schema: { $ref: '#/components/schemas/SuppressionReason' } }
+        - { name: state, in: query, schema: { type: string, enum: [active, expired, released, all], default: active } }
+        - { name: origin, in: query, schema: { $ref: '#/components/schemas/SuppressionOrigin' } }
+      responses:
+        '200':
+          description: Arquivo CSV UTF-8.
+          headers:
+            Content-Disposition:
+              schema: { type: string, example: 'attachment; filename="viapost-suppressions.csv"' }
+            Cache-Control:
+              schema: { type: string, const: 'private, no-store' }
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /v1/suppressions/{id}:
+    get:
+      operationId: getSuppressionsId
+      tags: [Suppressions]
+      summary: Consulta uma supressão e seu histórico
+      security:
+        - bearerApiKey: []
+        - sessionCookie: []
+      x-viapost-scope: 'suppressions:read'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: history_cursor
+          in: query
+          description: Cursor opaco para carregar eventos de auditoria anteriores.
+          schema: { type: string }
+        - name: history_limit
+          in: query
+          description: Quantidade de eventos de auditoria por página.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Supressão e eventos de auditoria em ordem cronológica.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SuppressionDetail' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /v1/suppressions/{id}/release:
+    post:
+      operationId: postSuppressionsIdRelease
+      tags: [Suppressions]
+      summary: Libera um endereço suprimido
+      description: |
+        Operação otimista e auditada. Exige confirmação explícita, a versão atual e justificativa
+        entre 10 e 500 caracteres. Supressões por `complaint`, `unsubscribe` ou `spam_trap` não
+        podem ser liberadas por esta API. Versão desatualizada, entrada já encerrada ou motivo
+        protegido retornam `409` sem alterar o registro.
+      security:
+        - bearerApiKey: []
+        - sessionCookie: []
+      x-viapost-scope: 'suppressions:write'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReleaseSuppressionRequest' }
+      responses:
+        '200':
+          description: Supressão liberada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Suppression' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -1888,6 +2268,42 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/InternalError' }
   /v1/webhooks/{id}:
+    patch:
+      operationId: patchWebhooksId
+      tags: [Webhooks]
+      summary: Atualizar ou reativar um endpoint de webhook
+      description: |
+        Aplica uma alteração com controle otimista de concorrência. Envie a
+        `version` atual em `expected_version`; uma versão desatualizada retorna
+        `409` sem aplicar parcialmente o formulário.
+      security:
+        - bearerApiKey: []
+        - sessionCookie: []
+      x-viapost-scope: 'webhooks:write'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateWebhookRequest' }
+      responses:
+        '200':
+          description: Endpoint atualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookEndpoint' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
     delete:
       operationId: deleteWebhooksId
       tags: [Webhooks]
@@ -1905,6 +2321,218 @@ paths:
       responses:
         '204':
           description: Sucesso
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /v1/webhooks/{id}/deliveries:
+    get:
+      operationId: getWebhooksIdDeliveries
+      tags: [Webhooks]
+      summary: Listar entregas de um endpoint
+      description: |
+        Retorna somente metadados operacionais. O corpo enviado, o corpo da
+        resposta do destino, headers e secrets nunca fazem parte desta lista.
+        A ordenação é estável por criação e UUID, do mais recente para o mais antigo.
+      security:
+        - bearerApiKey: []
+        - sessionCookie: []
+      x-viapost-scope: 'webhooks:read'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: cursor
+          in: query
+          description: Cursor opaco retornado em `next_cursor`.
+          schema: { type: string, minLength: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/WebhookDeliveryStatus' }
+        - name: event_type
+          in: query
+          schema: { $ref: '#/components/schemas/WebhookDeliveryEventType' }
+      responses:
+        '200':
+          description: Página de entregas
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookDeliveryPage' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /v1/webhooks/{id}/deliveries/{delivery_id}:
+    get:
+      operationId: getWebhooksIdDeliveriesDeliveryId
+      tags: [Webhooks]
+      summary: Consultar uma entrega e suas tentativas
+      description: |
+        Expõe um resumo seguro do payload por lista de campos permitidos e
+        metadados das tentativas. Não expõe destinatários, conteúdo arbitrário,
+        resposta bruta do destino, URL do endpoint nem credenciais.
+      security:
+        - bearerApiKey: []
+        - sessionCookie: []
+      x-viapost-scope: 'webhooks:read'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: delivery_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Detalhe seguro da entrega
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookDeliveryDetail' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /v1/webhooks/{id}/deliveries/{delivery_id}/replay:
+    post:
+      operationId: postWebhooksIdDeliveriesDeliveryIdReplay
+      tags: [Webhooks]
+      summary: Reenviar uma entrega terminal
+      description: |
+        Cria uma nova entrega a partir de uma entrega `delivered` ou `failed`.
+        A nova entrega tem UUID próprio e preserva o evento/payload original.
+        O replay é permitido por 7 dias enquanto o payload estiver retido.
+        Repetir a solicitação com a mesma chave retorna a mesma operação;
+        reutilizar a chave com outra solicitação, ou uma origem expirada, retorna `409`.
+        O endpoint precisa estar ativo para uma operação nova; replays em endpoint
+        desativado retornam `409` antes da criação de uma nova entrega. Um retry
+        idempotente de uma operação já aceita continua retornando o resultado original.
+        Novas operações estão sujeitas a cooldown por endpoint, limite persistente
+        de 100 por tenant em 24 horas e teto de 100 jobs não terminais.
+      security:
+        - bearerApiKey: []
+        - sessionCookie: []
+      x-viapost-scope: 'webhooks:write'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: delivery_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmptyObjectRequest' }
+      responses:
+        '202':
+          description: Reenvio persistido e aceito para processamento
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookReplayAccepted' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /v1/webhooks/{id}/test:
+    post:
+      operationId: postWebhooksIdTest
+      tags: [Webhooks]
+      summary: Enviar um evento de teste seguro
+      description: |
+        Enfileira `webhook.test` com um payload fixo gerado pela ViaPost, sem
+        dados de mensagens nem destinatários. Repetir a chave de idempotência
+        retorna a mesma entrega, inclusive se o endpoint tiver sido desativado depois.
+        Uma operação nova exige endpoint ativo e retorna `409` antes de criar a entrega
+        quando ele estiver desativado. Novas operações estão sujeitas a cooldown por
+        endpoint, limite persistente de 100 por tenant em 24 horas e teto de
+        100 jobs não terminais.
+      security:
+        - bearerApiKey: []
+        - sessionCookie: []
+      x-viapost-scope: 'webhooks:write'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmptyObjectRequest' }
+      responses:
+        '202':
+          description: Teste persistido e aceito para processamento
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookTestAccepted' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /v1/webhooks/{id}/secret/rotate:
+    post:
+      operationId: postWebhooksIdSecretRotate
+      tags: [Webhooks]
+      summary: Rotacionar o secret de assinatura
+      description: |
+        Substitui imediatamente o secret usado nas próximas entregas. O novo
+        valor em texto puro só aparece na primeira resposta e deve ser armazenado
+        com segurança. Um retry idempotente retorna apenas metadados, sem `secret`;
+        o servidor não persiste uma cópia histórica recuperável. A API nunca
+        retorna secrets em leituras.
+      security:
+        - bearerApiKey: []
+        - sessionCookie: []
+      x-viapost-scope: 'webhooks:write'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmptyObjectRequest' }
+      responses:
+        '200':
+          description: Secret rotacionado ou metadados da mesma rotação idempotente
+          headers:
+            Cache-Control:
+              schema: { type: string, const: 'private, no-store' }
+              description: Impede cache da resposta que pode conter o secret.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RotateWebhookSecretResponse' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -1942,6 +2570,14 @@ components:
       name: Idempotency-Key
       in: header
       required: false
+      schema: { type: string, minLength: 1, maxLength: 255 }
+    IdempotencyKeyRequired:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Identifica uma operação de escrita. Deve ser reutilizada apenas ao
+        repetir exatamente a mesma solicitação; uso conflitante retorna `409`.
       schema: { type: string, minLength: 1, maxLength: 255 }
     CsrfHeader:
       name: X-ViaPost-Csrf
@@ -2252,6 +2888,151 @@ components:
           description: Comunicações públicas curadas; não inclui diagnóstico, autoria ou dados operacionais.
           items:
             $ref: '#/components/schemas/PublicStatusNotice'
+    StatusSubscriptionRequest:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        component_ids: { type: array, minItems: 1, maxItems: 6, uniqueItems: true, items: { type: string, enum: [api, app, inbound, automations, webhooks, tracking] } }
+    StatusSubscriptionTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token: { type: string, minLength: 1, maxLength: 256 }
+    MessageResponse:
+      type: object
+      additionalProperties: false
+      required: [message]
+      properties:
+        message: { type: string }
+    SuppressionReason:
+      type: string
+      enum: [hard_bounce, complaint, unsubscribe, manual, invalid_address, spam_trap]
+    SuppressionOrigin:
+      type: string
+      enum: [manual, import, automatic]
+    SuppressionState:
+      type: string
+      enum: [active, expired, released]
+    Suppression:
+      type: object
+      additionalProperties: false
+      required: [id, email, reason, origin, state, scope, version, created_at, updated_at]
+      properties:
+        id: { $ref: '#/components/schemas/UUID' }
+        email: { type: string, format: email, maxLength: 254 }
+        reason: { $ref: '#/components/schemas/SuppressionReason' }
+        origin: { $ref: '#/components/schemas/SuppressionOrigin' }
+        state: { $ref: '#/components/schemas/SuppressionState' }
+        scope: { type: string, const: tenant }
+        note:
+          anyOf:
+            - { type: string, maxLength: 500 }
+            - { type: 'null' }
+          description: Observação segura fornecida pelo tenant; nunca contém o diagnóstico SMTP bruto.
+        domain_id:
+          anyOf:
+            - { $ref: '#/components/schemas/UUID' }
+            - { type: 'null' }
+        source_message_id:
+          anyOf:
+            - { $ref: '#/components/schemas/UUID' }
+            - { type: 'null' }
+        smtp_code:
+          anyOf:
+            - { type: integer, minimum: 100, maximum: 599 }
+            - { type: 'null' }
+        expires_at:
+          anyOf:
+            - { $ref: '#/components/schemas/Timestamp' }
+            - { type: 'null' }
+        released_at:
+          anyOf:
+            - { $ref: '#/components/schemas/Timestamp' }
+            - { type: 'null' }
+        release_reason:
+          anyOf:
+            - { type: string, minLength: 10, maxLength: 500 }
+            - { type: 'null' }
+        version: { type: integer, minimum: 1 }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+    SuppressionList:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/Suppression' }
+        next_cursor: { type: string }
+    SuppressionDetail:
+      type: object
+      additionalProperties: false
+      required: [suppression, history]
+      properties:
+        suppression: { $ref: '#/components/schemas/Suppression' }
+        history:
+          type: array
+          maxItems: 100
+          items: { $ref: '#/components/schemas/SuppressionHistoryEvent' }
+        next_history_cursor: { type: string }
+    SuppressionHistoryEvent:
+      type: object
+      additionalProperties: false
+      required: [id, action, origin, reason, actor_type, suppression_version, occurred_at]
+      properties:
+        id: { $ref: '#/components/schemas/UUID' }
+        action: { type: string, enum: [created, updated, released, reactivated] }
+        origin: { $ref: '#/components/schemas/SuppressionOrigin' }
+        reason: { $ref: '#/components/schemas/SuppressionReason' }
+        actor_type: { type: string, enum: [system, user, api_key] }
+        actor_id:
+          anyOf:
+            - { $ref: '#/components/schemas/UUID' }
+            - { type: 'null' }
+        justification:
+          anyOf:
+            - { type: string, minLength: 10, maxLength: 500 }
+            - { type: 'null' }
+        suppression_version: { type: integer, minimum: 1 }
+        occurred_at: { $ref: '#/components/schemas/Timestamp' }
+    CreateSuppressionRequest:
+      type: object
+      additionalProperties: false
+      required: [email, reason]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        reason: { type: string, enum: [manual, invalid_address] }
+        expires_at:
+          anyOf:
+            - { $ref: '#/components/schemas/Timestamp' }
+            - { type: 'null' }
+        note:
+          anyOf:
+            - { type: string, maxLength: 500 }
+            - { type: 'null' }
+    ReleaseSuppressionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version, acknowledge, justification]
+      properties:
+        expected_version: { type: integer, minimum: 1 }
+        acknowledge: { type: boolean, const: true }
+        justification: { type: string, minLength: 10, maxLength: 500 }
+    SuppressionImportResult:
+      type: object
+      additionalProperties: false
+      required: [total, created, reactivated, skipped, duplicates]
+      properties:
+        total: { type: integer, minimum: 0, maximum: 1000 }
+        created: { type: integer, minimum: 0, maximum: 1000 }
+        reactivated: { type: integer, minimum: 0, maximum: 1000 }
+        skipped: { type: integer, minimum: 0, maximum: 1000 }
+        duplicates: { type: integer, minimum: 0, maximum: 1000 }
     PublicStatusComponent:
       type: object
       additionalProperties: false
@@ -2356,9 +3137,36 @@ components:
     InboundMessageDetail:
       allOf:
         - $ref: '#/components/schemas/InboundMessage'
+        - $ref: '#/components/schemas/MessageContent'
         - type: object
-          required: [attachments]
-          properties: { attachments: { type: array, items: { $ref: '#/components/schemas/InboundAttachment' } }, raw_message_url: { type: string, format: uri } }
+          required: [attachments, content_status, content_variant]
+          properties:
+            attachments: { type: array, items: { $ref: '#/components/schemas/InboundAttachment' } }
+            content_variant: { type: string, const: received }
+            raw_message_url:
+              type: string
+              format: uri
+              deprecated: true
+              description: URL S3 pré-assinada mantida temporariamente para compatibilidade; use raw_message_api_path.
+            spf_result: { $ref: '#/components/schemas/SPFAuthenticationResult' }
+            spf_aligned:
+              anyOf: [{ type: boolean }, { type: 'null' }]
+              description: Indica alinhamento SPF com o domínio From para DMARC; nulo quando não foi possível avaliar.
+            dkim_result: { $ref: '#/components/schemas/DKIMAuthenticationResult' }
+            dkim_aligned:
+              anyOf: [{ type: boolean }, { type: 'null' }]
+              description: Indica alinhamento de ao menos uma assinatura DKIM aprovada com o domínio From; nulo quando não foi possível avaliar.
+            dmarc_result: { $ref: '#/components/schemas/DMARCAuthenticationResult' }
+            dmarc_disposition:
+              anyOf:
+                - { type: string, enum: [none, quarantine, reject] }
+                - { type: 'null' }
+              description: Disposição calculada para esta avaliação DMARC, separada do resultado pass/fail.
+            authentication_evaluated_at:
+              anyOf:
+                - { $ref: '#/components/schemas/Timestamp' }
+                - { type: 'null' }
+              description: Instante em que a autenticação foi avaliada no recebimento; nulo em registros legados ou não avaliados.
     Message:
       type: object
       required: [id, status, stream, from_address, to_address, recipient_domain, created_at]
@@ -2379,6 +3187,40 @@ components:
         first_opened_at: { $ref: '#/components/schemas/Timestamp' }
         first_clicked_at: { $ref: '#/components/schemas/Timestamp' }
         last_error: { anyOf: [{ type: string }, { type: 'null' }] }
+    MessageContent:
+      type: object
+      properties:
+        body_html:
+          description: HTML sanitizado no servidor e limitado a 1 MiB decodificado; consumidores ainda devem renderizá-lo como conteúdo não confiável. A prévia MIME só é processada para objetos de até 2 MiB.
+          type: string
+        body_plain:
+          description: Corpo de texto decodificado e limitado a 1 MiB para visualização.
+          type: string
+        content_status:
+          type: string
+          enum: [available, not_present, unavailable]
+          description: '`available` quando há corpo compatível; `not_present` quando o MIME válido não contém corpo de texto; `unavailable` quando o objeto não pode ser lido ou decodificado com segurança.'
+        raw_message_api_path:
+          type: string
+          pattern: '^/v1/.+/raw$'
+          description: Rota relativa autenticada; ausente quando a mensagem não possui referência de conteúdo armazenado.
+    MessageDetail:
+      allOf:
+        - $ref: '#/components/schemas/Message'
+        - $ref: '#/components/schemas/MessageContent'
+        - type: object
+          properties:
+            content_variant: { type: string, const: submitted }
+    SPFAuthenticationResult:
+      type: string
+      enum: [pass, fail, softfail, neutral, none, temperror, permerror, not_evaluated]
+    DKIMAuthenticationResult:
+      type: string
+      enum: [pass, fail, policy, neutral, none, temperror, permerror, not_evaluated]
+    DMARCAuthenticationResult:
+      type: string
+      enum: [pass, fail, quarantine, reject, none, temperror, permerror, not_evaluated]
+      description: Os valores quarantine e reject são mantidos para compatibilidade de clientes antigos; novas avaliações retornam pass/fail e informam a política em dmarc_disposition.
     MessageList:
       type: object
       required: [messages]
@@ -2531,21 +3373,221 @@ components:
       properties: { name: { type: string }, style: { type: object, additionalProperties: true } }
     WebhookEndpoint:
       type: object
-      required: [id, url, event_types, enabled, max_attempts, created_at]
-      properties: { id: { $ref: '#/components/schemas/UUID' }, url: { type: string, format: uri }, event_types: { type: array, items: { type: string } }, enabled: { type: boolean }, max_attempts: { type: integer }, created_at: { $ref: '#/components/schemas/Timestamp' } }
+      additionalProperties: false
+      required: [id, url, event_types, enabled, max_attempts, consecutive_failures, disabled_at, secret_rotated_at, version, created_at, updated_at]
+      properties:
+        id: { $ref: '#/components/schemas/UUID' }
+        url:
+          type: string
+          format: uri
+          pattern: '^https://'
+          description: URL HTTPS pública, sem credenciais ou fragmento; destinos privados são rejeitados.
+        event_types:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/WebhookSubscribableEventType' }
+        enabled: { type: boolean }
+        max_attempts: { type: integer, minimum: 1, maximum: 20 }
+        consecutive_failures: { type: integer, minimum: 0 }
+        disabled_at:
+          anyOf:
+            - { $ref: '#/components/schemas/Timestamp' }
+            - { type: 'null' }
+        secret_rotated_at:
+          anyOf:
+            - { $ref: '#/components/schemas/Timestamp' }
+            - { type: 'null' }
+        version: { type: integer, format: int64, minimum: 1 }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+    WebhookSubscribableEventType:
+      type: string
+      enum: [queued, sent, delivered, deferred, soft_bounce, hard_bounce, complaint, open, click, unsubscribe, rejected, failed, inbound.received]
+    WebhookDeliveryEventType:
+      anyOf:
+        - { $ref: '#/components/schemas/WebhookSubscribableEventType' }
+        - { type: string, const: webhook.test }
     WebhookList:
       type: object
+      additionalProperties: false
       required: [webhooks]
       properties: { webhooks: { type: array, items: { $ref: '#/components/schemas/WebhookEndpoint' } } }
     CreateWebhookRequest:
       type: object
       additionalProperties: false
       required: [url, event_types]
-      properties: { url: { type: string, format: uri }, event_types: { type: array, minItems: 1, items: { type: string } } }
+      properties:
+        url: { type: string, format: uri, pattern: '^https://' }
+        event_types:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/WebhookSubscribableEventType' }
     CreateWebhookResponse:
       type: object
+      additionalProperties: false
       required: [endpoint, secret]
-      properties: { endpoint: { $ref: '#/components/schemas/WebhookEndpoint' }, secret: { type: string, writeOnly: true } }
+      properties:
+        endpoint: { $ref: '#/components/schemas/WebhookEndpoint' }
+        secret:
+          type: string
+          minLength: 43
+          maxLength: 43
+          readOnly: true
+          description: Secret retornado uma única vez; não é recuperável por operações de leitura.
+    UpdateWebhookRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      minProperties: 2
+      properties:
+        expected_version: { type: integer, format: int64, minimum: 1 }
+        enabled: { type: boolean }
+        event_types:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { $ref: '#/components/schemas/WebhookSubscribableEventType' }
+        max_attempts: { type: integer, minimum: 1, maximum: 20 }
+    EmptyObjectRequest:
+      type: object
+      additionalProperties: false
+      maxProperties: 0
+    WebhookDeliveryStatus:
+      type: string
+      enum: [pending, delivered, failed]
+      description: |
+        `pending` agrega os estados internos em fila, processamento e retry.
+        `failed` também representa entregas canceladas porque o endpoint deixou
+        de estar disponível.
+    WebhookDeliverySummary:
+      type: object
+      additionalProperties: false
+      required: [delivery_id, event_type, status, attempt_count, created_at, updated_at, next_retry_at, delivered_at, last_response_code, last_duration_ms, is_test, replay_of_delivery_id]
+      properties:
+        delivery_id: { $ref: '#/components/schemas/UUID' }
+        event_type: { $ref: '#/components/schemas/WebhookDeliveryEventType' }
+        status: { $ref: '#/components/schemas/WebhookDeliveryStatus' }
+        attempt_count: { type: integer, minimum: 0 }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+        updated_at: { $ref: '#/components/schemas/Timestamp' }
+        next_retry_at:
+          anyOf:
+            - { $ref: '#/components/schemas/Timestamp' }
+            - { type: 'null' }
+        delivered_at:
+          anyOf:
+            - { $ref: '#/components/schemas/Timestamp' }
+            - { type: 'null' }
+        last_response_code:
+          anyOf:
+            - { type: integer, minimum: 100, maximum: 599 }
+            - { type: 'null' }
+        last_duration_ms:
+          anyOf:
+            - { type: integer, minimum: 0 }
+            - { type: 'null' }
+        is_test: { type: boolean }
+        replay_of_delivery_id:
+          anyOf:
+            - { $ref: '#/components/schemas/UUID' }
+            - { type: 'null' }
+    WebhookDeliveryPage:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/WebhookDeliverySummary' } }
+        next_cursor:
+          type: string
+          minLength: 1
+          description: Cursor opaco para a página seguinte; ausente na última página.
+    WebhookDeliveryAttempt:
+      type: object
+      additionalProperties: false
+      required: [attempt, status, response_code, duration_ms, attempted_at, next_retry_at]
+      properties:
+        attempt: { type: integer, minimum: 1 }
+        status:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: Estado persistido da tentativa; consumidores não devem inferir o estado agregado por este campo.
+        response_code:
+          anyOf:
+            - { type: integer, minimum: 100, maximum: 599 }
+            - { type: 'null' }
+        duration_ms:
+          anyOf:
+            - { type: integer, minimum: 0 }
+            - { type: 'null' }
+        attempted_at: { $ref: '#/components/schemas/Timestamp' }
+        next_retry_at:
+          anyOf:
+            - { $ref: '#/components/schemas/Timestamp' }
+            - { type: 'null' }
+    WebhookPayloadRedacted:
+      type: object
+      additionalProperties: false
+      description: |
+        Visão por lista de permissão. Campos arbitrários do payload original,
+        destinatários, conteúdo e URLs nunca são retornados.
+      properties:
+        event_type: { $ref: '#/components/schemas/WebhookDeliveryEventType' }
+        message_id: { $ref: '#/components/schemas/UUID' }
+        inbound_message_id: { $ref: '#/components/schemas/UUID' }
+        occurred_at: { $ref: '#/components/schemas/Timestamp' }
+        test: { type: boolean }
+    WebhookDeliveryDetail:
+      type: object
+      unevaluatedProperties: false
+      allOf:
+        - { $ref: '#/components/schemas/WebhookDeliverySummary' }
+        - type: object
+          required: [payload_redacted, attempts]
+          properties:
+            payload_redacted: { $ref: '#/components/schemas/WebhookPayloadRedacted' }
+            attempts: { type: array, items: { $ref: '#/components/schemas/WebhookDeliveryAttempt' } }
+    WebhookOperationAccepted:
+      type: object
+      additionalProperties: false
+      required: [delivery_id, status, created_at]
+      properties:
+        delivery_id: { $ref: '#/components/schemas/UUID' }
+        status: { type: string, const: queued }
+        created_at: { $ref: '#/components/schemas/Timestamp' }
+    WebhookTestAccepted:
+      type: object
+      unevaluatedProperties: false
+      allOf:
+        - { $ref: '#/components/schemas/WebhookOperationAccepted' }
+        - type: object
+          required: [is_test]
+          properties:
+            is_test: { type: boolean, const: true }
+    WebhookReplayAccepted:
+      type: object
+      unevaluatedProperties: false
+      allOf:
+        - { $ref: '#/components/schemas/WebhookOperationAccepted' }
+        - type: object
+          required: [source_delivery_id]
+          properties:
+            source_delivery_id: { $ref: '#/components/schemas/UUID' }
+    RotateWebhookSecretResponse:
+      type: object
+      additionalProperties: false
+      required: [endpoint, rotated_at]
+      properties:
+        endpoint: { $ref: '#/components/schemas/WebhookEndpoint' }
+        secret:
+          type: string
+          minLength: 43
+          maxLength: 43
+          readOnly: true
+          description: Novo secret; presente somente na primeira resposta da rotação.
+        rotated_at: { $ref: '#/components/schemas/Timestamp' }
   responses:
     ValidationError: { description: validation_error, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     Unauthorized: { description: unauthorized, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
@@ -2558,3 +3600,5 @@ components:
         Retry-After: { schema: { type: integer, minimum: 1 }, description: Segundos até nova tentativa. }
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     InternalError: { description: internal_error, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    PayloadTooLarge: { description: payload_too_large, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    ServiceUnavailable: { description: service_unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }

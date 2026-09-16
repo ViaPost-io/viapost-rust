@@ -8,8 +8,9 @@ use std::{
 };
 
 use viapost::{
-    ClientBuilder, CreateWebhookRequest, CreateWebhookResponse, Error, MessageListParams,
-    MetricsParams, SendRequest, TemplateAssetPolicy, TemplatePreconditionRequest, ViaPost,
+    ClientBuilder, CreateWebhookRequest, CreateWebhookResponse, EmailStream, Error, Message,
+    MessageDetail, MessageListParams, MetricsParams, SendRequest, TemplateAssetPolicy,
+    TemplatePreconditionRequest, UpdateWebhookRequest, ViaPost, WebhookDeliveryListParams,
     WebhookEndpoint,
 };
 
@@ -130,10 +131,15 @@ fn one_time_credentials_are_redacted_from_debug_output() {
         endpoint: WebhookEndpoint {
             id: "webhook-id".to_owned(),
             url: "https://example.test/webhook".to_owned(),
-            event_types: vec!["message.delivered".to_owned()],
+            event_types: vec!["delivered".to_owned()],
             enabled: true,
             max_attempts: 3,
+            consecutive_failures: 0,
+            disabled_at: None,
+            secret_rotated_at: None,
+            version: 1,
             created_at: "2026-09-11T00:00:00Z".to_owned(),
+            updated_at: "2026-09-11T00:00:00Z".to_owned(),
         },
         secret: webhook_secret.to_owned(),
     };
@@ -151,6 +157,46 @@ fn one_time_credentials_are_redacted_from_debug_output() {
     assert!(webhook_debug.contains("[REDACTED]"));
     assert!(!asset_debug.contains("signed-policy"));
     assert!(!asset_debug.contains("signed-url"));
+
+    let detail = MessageDetail {
+        message: Message {
+            id: "message-id".to_owned(),
+            status: "delivered".to_owned(),
+            stream: EmailStream::Transactional,
+            from_address: "hello@example.com".to_owned(),
+            to_address: "person@example.com".to_owned(),
+            subject: Some("Hello".to_owned()),
+            recipient_domain: "example.com".to_owned(),
+            api_key_id: None,
+            created_at: "2026-09-16T00:00:00Z".to_owned(),
+            queued_at: None,
+            sent_at: None,
+            delivered_at: None,
+            failed_at: None,
+            first_opened_at: None,
+            first_clicked_at: None,
+            last_error: None,
+        },
+        body_html: Some("<p>private body</p>".to_owned()),
+        body_plain: Some("private body".to_owned()),
+        content_status: Some("available".to_owned()),
+        raw_message_api_path: Some("/v1/messages/message-id/raw".to_owned()),
+        content_variant: Some("submitted".to_owned()),
+    };
+    let detail_debug = format!("{detail:?}");
+    assert!(!detail_debug.contains("private body"));
+
+    let endpoint_debug = format!("{:?}", webhook.endpoint);
+    assert!(!endpoint_debug.contains("example.test/webhook"));
+
+    let create_request = CreateWebhookRequest {
+        url: "https://example.test/webhook?token=never-log-this".to_owned(),
+        event_types: vec!["delivered".to_owned()],
+    };
+    let request_debug = format!("{create_request:?}");
+    assert!(!request_debug.contains("example.test/webhook"));
+    assert!(!request_debug.contains("never-log-this"));
+    assert!(request_debug.contains("[REDACTED]"));
 }
 
 #[tokio::test]
@@ -261,6 +307,35 @@ async fn validates_contract_constraints_before_network() {
         Err(Error::Validation(_))
     ));
 
+    let insecure_webhook = CreateWebhookRequest {
+        url: "http://example.com/hook".to_owned(),
+        event_types: vec!["delivered".to_owned()],
+    };
+    assert!(matches!(
+        client.webhooks().create(&insecure_webhook).await,
+        Err(Error::Validation(_))
+    ));
+
+    for private_url in [
+        "https://localhost/hook",
+        "https://localhost./hook",
+        "https://api.localhost/hook",
+        "https://127.0.0.1/hook",
+        "https://10.0.0.1/hook",
+        "https://169.254.1.1/hook",
+        "https://[::1]/hook",
+        "https://[fc00::1]/hook",
+    ] {
+        let webhook = CreateWebhookRequest {
+            url: private_url.to_owned(),
+            event_types: vec!["delivered".to_owned()],
+        };
+        assert!(matches!(
+            client.webhooks().create(&webhook).await,
+            Err(Error::Validation(_))
+        ));
+    }
+
     let incomplete_precondition = TemplatePreconditionRequest {
         expected_version_id: Some("11111111-1111-1111-1111-111111111111".to_owned()),
         expected_updated_at: None,
@@ -284,6 +359,221 @@ async fn validates_contract_constraints_before_network() {
                 Some(&incomplete_precondition),
             )
             .await,
+        Err(Error::Validation(_))
+    ));
+}
+
+#[tokio::test]
+async fn message_retrieve_returns_content_aware_detail() {
+    let body = r#"{"id":"11111111-1111-1111-1111-111111111111","status":"delivered","stream":"transactional","from_address":"hello@example.com","to_address":"person@example.com","subject":"Hello","recipient_domain":"example.com","api_key_id":null,"created_at":"2026-09-16T00:00:00Z","queued_at":null,"sent_at":null,"delivered_at":"2026-09-16T00:00:01Z","failed_at":null,"first_opened_at":null,"first_clicked_at":null,"last_error":null,"body_html":"<p>Hello</p>","body_plain":"Hello","content_status":"available","raw_message_api_path":"/v1/messages/11111111-1111-1111-1111-111111111111/raw","content_variant":"submitted"}"#;
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let leaked: &'static str = Box::leak(response.into_boxed_str());
+    let (base_url, requests) = server(vec![leaked]);
+    let client = ViaPost::builder("vp_test")
+        .base_url(base_url)
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let detail = client
+        .messages()
+        .retrieve("11111111-1111-1111-1111-111111111111")
+        .await
+        .unwrap();
+
+    assert_eq!(detail.message.status, "delivered");
+    assert_eq!(detail.body_plain.as_deref(), Some("Hello"));
+    assert_eq!(detail.content_status.as_deref(), Some("available"));
+    assert!(detail
+        .raw_message_api_path
+        .as_deref()
+        .is_some_and(|path| path.ends_with("/raw")));
+    let captured = requests.lock().unwrap();
+    assert!(captured[0].starts_with("GET /v1/messages/"));
+    assert!(captured[0].contains("11111111%2D1111%2D1111%2D1111%2D111111111111"));
+}
+
+#[tokio::test]
+async fn message_raw_download_returns_the_original_rfc5322_bytes() {
+    let body = "From: hello@example.com\r\nTo: person@example.com\r\n\r\nHello\r\n";
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: message/rfc822\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let leaked: &'static str = Box::leak(response.into_boxed_str());
+    let (base_url, requests) = server(vec![leaked]);
+    let client = ViaPost::builder("vp_test")
+        .base_url(base_url)
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let raw = client
+        .messages()
+        .raw("11111111-1111-1111-1111-111111111111")
+        .await
+        .unwrap();
+
+    assert_eq!(raw, body.as_bytes());
+    let captured = requests.lock().unwrap();
+    assert!(captured[0].starts_with("GET /v1/messages/"));
+    assert!(captured[0].contains("/raw "));
+    assert!(captured[0]
+        .to_ascii_lowercase()
+        .contains("accept: message/rfc822"));
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn webhook_management_and_delivery_operations_follow_the_contract() {
+    let endpoint = r#"{"id":"11111111-1111-1111-1111-111111111111","url":"https://example.com/hook","event_types":["delivered"],"enabled":true,"max_attempts":8,"consecutive_failures":0,"disabled_at":null,"secret_rotated_at":null,"version":2,"created_at":"2026-09-16T00:00:00Z","updated_at":"2026-09-16T00:01:00Z"}"#;
+    let delivery_page = r#"{"data":[],"next_cursor":"next-page"}"#;
+    let delivery = r#"{"delivery_id":"22222222-2222-2222-2222-222222222222","event_type":"delivered","status":"delivered","attempt_count":1,"created_at":"2026-09-16T00:00:00Z","updated_at":"2026-09-16T00:00:01Z","next_retry_at":null,"delivered_at":"2026-09-16T00:00:01Z","last_response_code":204,"last_duration_ms":15,"is_test":false,"replay_of_delivery_id":null,"payload_redacted":{"event_type":"delivered","message_id":"33333333-3333-3333-3333-333333333333","occurred_at":"2026-09-16T00:00:00Z"},"attempts":[{"attempt":1,"status":"delivered","response_code":204,"duration_ms":15,"attempted_at":"2026-09-16T00:00:01Z","next_retry_at":null}]}"#;
+    let test_accepted = r#"{"delivery_id":"44444444-4444-4444-4444-444444444444","status":"queued","created_at":"2026-09-16T00:02:00Z","is_test":true}"#;
+    let replay_accepted = r#"{"delivery_id":"55555555-5555-5555-5555-555555555555","status":"queued","created_at":"2026-09-16T00:03:00Z","source_delivery_id":"22222222-2222-2222-2222-222222222222"}"#;
+    let rotation = format!(
+        "{{\"endpoint\":{endpoint},\"secret\":\"{}\",\"rotated_at\":\"2026-09-16T00:04:00Z\"}}",
+        "s".repeat(43)
+    );
+    let responses: Vec<&'static str> = [
+        endpoint.to_owned(),
+        delivery_page.to_owned(),
+        delivery.to_owned(),
+        test_accepted.to_owned(),
+        replay_accepted.to_owned(),
+        rotation,
+    ]
+    .into_iter()
+    .map(|body| {
+        Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        ) as &'static str
+    })
+    .collect();
+    let (base_url, requests) = server(responses);
+    let client = ViaPost::builder("vp_test")
+        .base_url(base_url)
+        .unwrap()
+        .build()
+        .unwrap();
+    let webhook_id = "11111111-1111-1111-1111-111111111111";
+    let delivery_id = "22222222-2222-2222-2222-222222222222";
+
+    let updated = client
+        .webhooks()
+        .update(
+            webhook_id,
+            &UpdateWebhookRequest {
+                expected_version: 1,
+                enabled: None,
+                event_types: None,
+                max_attempts: Some(8),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.version, 2);
+
+    let page = client
+        .webhooks()
+        .deliveries(
+            webhook_id,
+            WebhookDeliveryListParams {
+                cursor: Some("opaque cursor".to_owned()),
+                limit: Some(25),
+                status: Some("delivered".to_owned()),
+                event_type: Some("delivered".to_owned()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.next_cursor.as_deref(), Some("next-page"));
+
+    let detail = client
+        .webhooks()
+        .delivery(webhook_id, delivery_id)
+        .await
+        .unwrap();
+    assert_eq!(detail.summary.last_response_code, Some(204));
+    assert_eq!(detail.attempts.len(), 1);
+
+    let accepted = client
+        .webhooks()
+        .test(webhook_id, "test-operation-1")
+        .await
+        .unwrap();
+    assert!(accepted.is_test);
+
+    let replayed = client
+        .webhooks()
+        .replay(webhook_id, delivery_id, "replay-operation-1")
+        .await
+        .unwrap();
+    assert_eq!(replayed.source_delivery_id, delivery_id);
+
+    let rotated = client
+        .webhooks()
+        .rotate_secret(webhook_id, "rotate-operation-1")
+        .await
+        .unwrap();
+    assert_eq!(rotated.secret.as_deref().map(str::len), Some(43));
+    assert!(!format!("{rotated:?}").contains(&"s".repeat(43)));
+
+    let captured = requests.lock().unwrap();
+    assert!(captured[0].starts_with("PATCH /v1/webhooks/"));
+    assert!(captured[0].contains("11111111%2D1111%2D1111%2D1111%2D111111111111"));
+    assert!(captured[0].contains("\"expected_version\":1"));
+    assert!(captured[1].contains("cursor=opaque+cursor"));
+    assert!(captured[1].contains("limit=25"));
+    assert!(captured[2].starts_with("GET /v1/webhooks/"));
+    assert!(captured[2].contains("/deliveries/22222222%2D2222%2D2222%2D2222%2D222222222222"));
+    assert!(captured[3].starts_with("POST /v1/webhooks/"));
+    assert!(captured[3].contains("/test "));
+    assert!(captured[4].starts_with("POST /v1/webhooks/"));
+    assert!(captured[4].contains("/deliveries/22222222%2D2222%2D2222%2D2222%2D222222222222/replay"));
+    assert!(captured[5].starts_with("POST /v1/webhooks/"));
+    assert!(captured[5].contains("/secret/rotate "));
+    for (request, key) in [
+        (&captured[3], "test-operation-1"),
+        (&captured[4], "replay-operation-1"),
+        (&captured[5], "rotate-operation-1"),
+    ] {
+        assert!(request
+            .to_ascii_lowercase()
+            .contains(&format!("idempotency-key: {key}")));
+        assert!(request.ends_with("{}"));
+    }
+}
+
+#[tokio::test]
+async fn webhook_update_rejects_noop_and_invalid_constraints_before_network() {
+    let client = ViaPost::new("vp_test").unwrap();
+    let noop = UpdateWebhookRequest {
+        expected_version: 1,
+        enabled: None,
+        event_types: None,
+        max_attempts: None,
+    };
+    assert!(matches!(
+        client.webhooks().update("webhook-id", &noop).await,
+        Err(Error::Validation(_))
+    ));
+
+    let invalid = UpdateWebhookRequest {
+        expected_version: 0,
+        enabled: Some(true),
+        event_types: None,
+        max_attempts: None,
+    };
+    assert!(matches!(
+        client.webhooks().update("webhook-id", &invalid).await,
         Err(Error::Validation(_))
     ));
 }

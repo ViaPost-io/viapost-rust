@@ -1,9 +1,9 @@
 use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
 use reqwest::{
-    header::{HeaderMap, HeaderName, HeaderValue},
+    header::{HeaderMap, HeaderName, HeaderValue, ACCEPT},
     Method,
 };
-use url::Url;
+use url::{Host, Url};
 
 use crate::models::*;
 use crate::{Error, ViaPost};
@@ -78,6 +78,168 @@ fn validate_template_draft(request: &UpdateTemplateDraftRequest) -> Result<(), E
     )
 }
 
+const WEBHOOK_EVENT_TYPES: &[&str] = &[
+    "queued",
+    "sent",
+    "delivered",
+    "deferred",
+    "soft_bounce",
+    "hard_bounce",
+    "complaint",
+    "open",
+    "click",
+    "unsubscribe",
+    "rejected",
+    "failed",
+    "inbound.received",
+];
+
+fn validate_webhook_event_types(event_types: &[String]) -> Result<(), Error> {
+    if event_types.is_empty() {
+        return Err(Error::Validation(
+            "event_types must contain at least one item".into(),
+        ));
+    }
+    let mut unique = std::collections::BTreeSet::new();
+    for event_type in event_types {
+        if !WEBHOOK_EVENT_TYPES.contains(&event_type.as_str()) {
+            return Err(Error::Validation(format!(
+                "unsupported webhook event type: {event_type}"
+            )));
+        }
+        if !unique.insert(event_type) {
+            return Err(Error::Validation(
+                "event_types must not contain duplicates".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_webhook_url(raw: &str) -> Result<(), Error> {
+    let url = Url::parse(raw)
+        .map_err(|_| Error::Validation("webhook url must be an absolute HTTPS URL".into()))?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(Error::Validation(
+            "webhook url must be an absolute HTTPS URL without credentials or a fragment".into(),
+        ));
+    }
+    let private_destination = match url.host() {
+        Some(Host::Domain(domain)) => {
+            let normalized = domain.trim_end_matches('.');
+            normalized.eq_ignore_ascii_case("localhost")
+                || normalized.to_ascii_lowercase().ends_with(".localhost")
+        }
+        Some(Host::Ipv4(address)) => !is_public_ipv4(address),
+        Some(Host::Ipv6(address)) => address.to_ipv4_mapped().map_or_else(
+            || !is_public_ipv6(address),
+            |mapped| !is_public_ipv4(mapped),
+        ),
+        None => true,
+    };
+    if private_destination {
+        return Err(Error::Validation(
+            "webhook url must use a publicly routable destination".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn is_public_ipv4(address: std::net::Ipv4Addr) -> bool {
+    let octets = address.octets();
+    !(address.is_private()
+        || address.is_loopback()
+        || address.is_link_local()
+        || address.is_unspecified()
+        || address.is_broadcast()
+        || address.is_multicast()
+        || address.is_documentation()
+        || octets[0] == 0
+        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+        || (octets[0] == 198 && (18..=19).contains(&octets[1]))
+        || octets[0] >= 240)
+}
+
+fn is_public_ipv6(address: std::net::Ipv6Addr) -> bool {
+    let segments = address.segments();
+    !(address.is_loopback()
+        || address.is_unspecified()
+        || address.is_multicast()
+        || address.is_unique_local()
+        || address.is_unicast_link_local()
+        || (segments[0] == 0x2001 && segments[1] == 0x0db8))
+}
+
+fn validate_webhook_update(request: &UpdateWebhookRequest) -> Result<(), Error> {
+    if request.expected_version == 0 {
+        return Err(Error::Validation(
+            "expected_version must be greater than zero".into(),
+        ));
+    }
+    if request.enabled.is_none() && request.event_types.is_none() && request.max_attempts.is_none()
+    {
+        return Err(Error::Validation(
+            "webhook update must contain at least one change".into(),
+        ));
+    }
+    if let Some(event_types) = &request.event_types {
+        validate_webhook_event_types(event_types)?;
+    }
+    if request
+        .max_attempts
+        .is_some_and(|max_attempts| !(1..=20).contains(&max_attempts))
+    {
+        return Err(Error::Validation(
+            "max_attempts must be between 1 and 20".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_webhook_delivery_params(params: &WebhookDeliveryListParams) -> Result<(), Error> {
+    if params.cursor.as_ref().is_some_and(String::is_empty) {
+        return Err(Error::Validation("cursor must not be empty".into()));
+    }
+    if params
+        .limit
+        .is_some_and(|limit| !(1..=100).contains(&limit))
+    {
+        return Err(Error::Validation("limit must be between 1 and 100".into()));
+    }
+    if params
+        .status
+        .as_deref()
+        .is_some_and(|status| !matches!(status, "pending" | "delivered" | "failed"))
+    {
+        return Err(Error::Validation(
+            "status must be pending, delivered, or failed".into(),
+        ));
+    }
+    if params.event_type.as_deref().is_some_and(|event_type| {
+        event_type != "webhook.test" && !WEBHOOK_EVENT_TYPES.contains(&event_type)
+    }) {
+        return Err(Error::Validation(
+            "event_type is not supported by the public webhook contract".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn idempotency_headers(key: &str) -> Result<HeaderMap, Error> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static("idempotency-key"),
+        validate_idempotency_key(key)?,
+    );
+    Ok(headers)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct SendResource<'a> {
     client: &'a ViaPost,
@@ -135,10 +297,24 @@ impl<'a> MessagesResource<'a> {
             )
             .await
     }
-    pub async fn retrieve(&self, message_id: &str) -> Result<Message, Error> {
+    pub async fn retrieve(&self, message_id: &str) -> Result<MessageDetail, Error> {
         let id = path_parameter("message_id", message_id)?;
         self.client
             .request(Method::GET, &format!("/v1/messages/{id}"), None, None, None)
+            .await
+    }
+    pub async fn raw(&self, message_id: &str) -> Result<Vec<u8>, Error> {
+        let id = path_parameter("message_id", message_id)?;
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT, HeaderValue::from_static("message/rfc822"));
+        self.client
+            .request_bytes(
+                Method::GET,
+                &format!("/v1/messages/{id}/raw"),
+                None,
+                None,
+                Some(headers),
+            )
             .await
     }
     pub async fn events(&self, message_id: &str) -> Result<MessageEventList, Error> {
@@ -484,18 +660,8 @@ impl<'a> WebhooksResource<'a> {
         &self,
         request: &CreateWebhookRequest,
     ) -> Result<CreateWebhookResponse, Error> {
-        let url = Url::parse(&request.url)
-            .map_err(|_| Error::Validation("webhook url must be an absolute HTTP(S) URL".into()))?;
-        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-            return Err(Error::Validation(
-                "webhook url must be an absolute HTTP(S) URL".into(),
-            ));
-        }
-        if request.event_types.is_empty() {
-            return Err(Error::Validation(
-                "event_types must contain at least one item".into(),
-            ));
-        }
+        validate_webhook_url(&request.url)?;
+        validate_webhook_event_types(&request.event_types)?;
         self.client
             .request(
                 Method::POST,
@@ -506,10 +672,111 @@ impl<'a> WebhooksResource<'a> {
             )
             .await
     }
+    pub async fn update(
+        &self,
+        webhook_id: &str,
+        request: &UpdateWebhookRequest,
+    ) -> Result<WebhookEndpoint, Error> {
+        validate_webhook_update(request)?;
+        let id = path_parameter("webhook_id", webhook_id)?;
+        self.client
+            .request(
+                Method::PATCH,
+                &format!("/v1/webhooks/{id}"),
+                None,
+                Some(ViaPost::body(request)?),
+                None,
+            )
+            .await
+    }
     pub async fn delete(&self, webhook_id: &str) -> Result<(), Error> {
         let id = path_parameter("webhook_id", webhook_id)?;
         self.client
             .request_empty(Method::DELETE, &format!("/v1/webhooks/{id}"), None)
+            .await
+    }
+    pub async fn deliveries(
+        &self,
+        webhook_id: &str,
+        params: WebhookDeliveryListParams,
+    ) -> Result<WebhookDeliveryPage, Error> {
+        validate_webhook_delivery_params(&params)?;
+        let id = path_parameter("webhook_id", webhook_id)?;
+        self.client
+            .request(
+                Method::GET,
+                &format!("/v1/webhooks/{id}/deliveries"),
+                Some(ViaPost::body(&params)?),
+                None,
+                None,
+            )
+            .await
+    }
+    pub async fn delivery(
+        &self,
+        webhook_id: &str,
+        delivery_id: &str,
+    ) -> Result<WebhookDeliveryDetail, Error> {
+        let webhook_id = path_parameter("webhook_id", webhook_id)?;
+        let delivery_id = path_parameter("delivery_id", delivery_id)?;
+        self.client
+            .request(
+                Method::GET,
+                &format!("/v1/webhooks/{webhook_id}/deliveries/{delivery_id}"),
+                None,
+                None,
+                None,
+            )
+            .await
+    }
+    pub async fn test(
+        &self,
+        webhook_id: &str,
+        idempotency_key: &str,
+    ) -> Result<WebhookTestAccepted, Error> {
+        let id = path_parameter("webhook_id", webhook_id)?;
+        self.client
+            .request(
+                Method::POST,
+                &format!("/v1/webhooks/{id}/test"),
+                None,
+                Some(serde_json::json!({})),
+                Some(idempotency_headers(idempotency_key)?),
+            )
+            .await
+    }
+    pub async fn replay(
+        &self,
+        webhook_id: &str,
+        delivery_id: &str,
+        idempotency_key: &str,
+    ) -> Result<WebhookReplayAccepted, Error> {
+        let webhook_id = path_parameter("webhook_id", webhook_id)?;
+        let delivery_id = path_parameter("delivery_id", delivery_id)?;
+        self.client
+            .request(
+                Method::POST,
+                &format!("/v1/webhooks/{webhook_id}/deliveries/{delivery_id}/replay"),
+                None,
+                Some(serde_json::json!({})),
+                Some(idempotency_headers(idempotency_key)?),
+            )
+            .await
+    }
+    pub async fn rotate_secret(
+        &self,
+        webhook_id: &str,
+        idempotency_key: &str,
+    ) -> Result<RotateWebhookSecretResponse, Error> {
+        let id = path_parameter("webhook_id", webhook_id)?;
+        self.client
+            .request(
+                Method::POST,
+                &format!("/v1/webhooks/{id}/secret/rotate"),
+                None,
+                Some(serde_json::json!({})),
+                Some(idempotency_headers(idempotency_key)?),
+            )
             .await
     }
 }
