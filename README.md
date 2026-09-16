@@ -11,11 +11,11 @@ O canal principal é uma tag pública no GitHub, sem token:
 
 ```toml
 [dependencies]
-viapost = { git = "https://github.com/ViaPost-io/viapost-rust", tag = "v0.1.0" }
+viapost = { git = "https://github.com/ViaPost-io/viapost-rust", tag = "v0.1.1" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-O artefato verificável `viapost-0.1.0.crate` e `SHA256SUMS` também são publicados no
+O artefato verificável `viapost-0.1.1.crate` e `SHA256SUMS` também são publicados no
 [GitHub Releases](https://github.com/ViaPost-io/viapost-rust/releases). A publicação no crates.io é
 opcional e só ocorre por execução manual aprovada.
 
@@ -73,7 +73,7 @@ GitHub tags are the primary, tokenless distribution channel:
 
 ```toml
 [dependencies]
-viapost = { git = "https://github.com/ViaPost-io/viapost-rust", tag = "v0.1.0" }
+viapost = { git = "https://github.com/ViaPost-io/viapost-rust", tag = "v0.1.1" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 

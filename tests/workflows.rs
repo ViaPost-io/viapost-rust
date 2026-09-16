@@ -38,3 +38,28 @@ fn contract_drift_uses_the_published_public_contract() {
     assert!(workflow.contains("https://docs.viapost.io/openapi/public.yaml"));
     assert!(!workflow.contains("raw.githubusercontent.com/ViaPost-io/base-code"));
 }
+
+#[test]
+fn ci_and_release_validate_a_fresh_msrv_consumer() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))
+        .expect("CI workflow should be readable");
+    let release = fs::read_to_string(root.join(".github/workflows/release.yml"))
+        .expect("release workflow should be readable");
+    let script = root.join("scripts/check-msrv-consumer.sh");
+
+    assert!(script.exists());
+    assert!(ci.contains("scripts/check-msrv-consumer.sh"));
+    assert!(release.contains("scripts/check-msrv-consumer.sh"));
+    assert!(release.contains("verify-fresh-msrv-consumer:"));
+    assert!(release.contains("needs: verify-fresh-msrv-consumer"));
+    assert!(release.contains("source_sha: ${{ steps.source.outputs.sha }}"));
+    assert!(release.contains("ref: ${{ needs.verify-fresh-msrv-consumer.outputs.source_sha }}"));
+
+    let producer = release
+        .split("  verify-and-build:")
+        .nth(1)
+        .and_then(|section| section.split("  attest-build-provenance:").next())
+        .expect("release artifact producer should exist");
+    assert!(!producer.contains("scripts/check-msrv-consumer.sh"));
+}

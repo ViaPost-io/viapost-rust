@@ -19,14 +19,35 @@ permissions:
   contents: read
 
 jobs:
+  verify-fresh-msrv-consumer:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          ref: ${{ github.event_name == 'push' && github.sha || inputs.tag }}
+          persist-credentials: false
+      - name: Freeze the verified source revision
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: '1.85.1'
+      - name: Verify a lockfile-free external consumer on the MSRV
+        run: scripts/check-msrv-consumer.sh
+
   verify-and-build:
+    needs: verify-fresh-msrv-consumer
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:
-          ref: ${{ github.event_name == 'push' && github.sha || inputs.tag }}
+          ref: ${{ needs.verify-fresh-msrv-consumer.outputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
