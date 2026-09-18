@@ -9,10 +9,10 @@ use std::{
 
 use viapost::{
     BatchSendMessage, BatchSendRequest, ClientBuilder, CreateWebhookRequest, CreateWebhookResponse,
-    EmailStream, Error, Message, MessageDetail, MessageListParams, MessageTimelineParams,
-    MetricsParams, SegmentDefinition, SegmentPreviewRequest, SendRequest, TemplateAssetPolicy,
-    TemplatePreconditionRequest, UpdateWebhookRequest, ViaPost, WebhookDeliveryListParams,
-    WebhookEndpoint,
+    EmailStream, Error, Message, MessageDetail, MessageListParams, MessageTimelineEvent,
+    MessageTimelinePage, MessageTimelineParams, MetricsParams, SegmentDefinition,
+    SegmentPreviewRequest, SendRequest, TemplateAssetPolicy, TemplatePreconditionRequest,
+    UpdateWebhookRequest, ViaPost, WebhookDeliveryListParams, WebhookEndpoint,
 };
 
 fn server(responses: Vec<&'static str>) -> (String, Arc<Mutex<Vec<String>>>) {
@@ -399,6 +399,106 @@ async fn new_contract_validation_rejects_invalid_requests_before_network() {
         client.send().batch(&request).await,
         Err(Error::Validation(_))
     ));
+}
+
+#[test]
+fn timeline_debug_redacts_delivery_metadata() {
+    let timeline = MessageTimelinePage {
+        data: vec![MessageTimelineEvent {
+            id: "event-id".to_owned(),
+            message_id: "message-id".to_owned(),
+            event_type: "delivered".to_owned(),
+            occurred_at: "2026-09-18T00:00:00Z".to_owned(),
+            recipient: Some("person@example.com".to_owned()),
+            smtp_code: Some(250),
+            enhanced_code: Some("2.0.0".to_owned()),
+            diagnostic: Some("private SMTP diagnostic".to_owned()),
+            mx_host: Some("mx.private.example".to_owned()),
+            click_url: Some("https://private.example/click?token=secret".to_owned()),
+        }],
+        next_cursor: Some("opaque-cursor".to_owned()),
+    };
+    let debug = format!("{timeline:?}");
+    for secret in [
+        "person@example.com",
+        "private SMTP diagnostic",
+        "mx.private.example",
+        "https://private.example/click?token=secret",
+    ] {
+        assert!(!debug.contains(secret));
+    }
+    assert!(debug.contains("[REDACTED]"));
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn segment_preview_validates_published_recursive_rule_bounds_before_network() {
+    let client = ViaPost::builder("vp_test")
+        .base_url("http://127.0.0.1:9")
+        .unwrap()
+        .build()
+        .unwrap();
+    let valid = SegmentPreviewRequest {
+        definition: SegmentDefinition(serde_json::json!({
+            "all": [{"any": [{"field": "property", "key": "plan", "operator": "eq", "value": "pro"}]}]
+        })),
+        limit: Some(50),
+    };
+    assert!(matches!(
+        client.segments().preview(&valid).await,
+        Err(Error::Transport(_))
+    ));
+
+    let depth_five = SegmentPreviewRequest {
+        definition: SegmentDefinition(
+            serde_json::json!({"all":[{"any":[{"all":[{"any":[{"all":[{"field":"subscribed","operator":"eq","value":true}]}]}]}]}]}),
+        ),
+        limit: None,
+    };
+    assert!(matches!(
+        client.segments().preview(&depth_five).await,
+        Err(Error::Validation(_))
+    ));
+
+    let too_many_children = SegmentPreviewRequest {
+        definition: SegmentDefinition(
+            serde_json::json!({"all": (0..26).map(|_| serde_json::json!({"field":"subscribed","operator":"eq","value":true})).collect::<Vec<_>>() }),
+        ),
+        limit: None,
+    };
+    assert!(matches!(
+        client.segments().preview(&too_many_children).await,
+        Err(Error::Validation(_))
+    ));
+
+    let too_many_predicates = SegmentPreviewRequest {
+        definition: SegmentDefinition(
+            serde_json::json!({"all": (0..5).map(|_| serde_json::json!({"any": (0..25).map(|_| serde_json::json!({"field":"subscribed","operator":"eq","value":true})).collect::<Vec<_>>() })).collect::<Vec<_>>() }),
+        ),
+        limit: None,
+    };
+    assert!(matches!(
+        client.segments().preview(&too_many_predicates).await,
+        Err(Error::Validation(_))
+    ));
+
+    for invalid in [
+        serde_json::json!({"field":"subscribed","operator":"eq","value":"true"}),
+        serde_json::json!({"field":"property","key":"", "operator":"exists"}),
+        serde_json::json!({"event_name":"viapost:internal","operator":"occurred","within_days":1}),
+        serde_json::json!({"field":"email","operator":"contains","value":""}),
+        serde_json::json!({"field":"created_at","operator":"after","value":"not-a-timestamp"}),
+        serde_json::json!({"field":"subscribed","operator":"eq","value":true,"extra":false}),
+    ] {
+        let request = SegmentPreviewRequest {
+            definition: SegmentDefinition(invalid),
+            limit: None,
+        };
+        assert!(matches!(
+            client.segments().preview(&request).await,
+            Err(Error::Validation(_))
+        ));
+    }
 }
 
 #[tokio::test]

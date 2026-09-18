@@ -826,7 +826,7 @@ pub struct MessageTimelineParams {
     pub message_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct MessageTimelineEvent {
     pub id: String,
     pub message_id: String,
@@ -841,10 +841,41 @@ pub struct MessageTimelineEvent {
     pub click_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+impl fmt::Debug for MessageTimelineEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MessageTimelineEvent")
+            .field("id", &self.id)
+            .field("message_id", &self.message_id)
+            .field("event_type", &self.event_type)
+            .field("occurred_at", &self.occurred_at)
+            .field("recipient", &self.recipient.as_ref().map(|_| "[REDACTED]"))
+            .field("smtp_code", &self.smtp_code)
+            .field("enhanced_code", &self.enhanced_code)
+            .field(
+                "diagnostic",
+                &self.diagnostic.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("mx_host", &self.mx_host.as_ref().map(|_| "[REDACTED]"))
+            .field("click_url", &self.click_url.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
+#[derive(Clone, Deserialize)]
 pub struct MessageTimelinePage {
     pub data: Vec<MessageTimelineEvent>,
     pub next_cursor: Option<String>,
+}
+
+impl fmt::Debug for MessageTimelinePage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MessageTimelinePage")
+            .field("data", &"[REDACTED]")
+            .field("next_cursor", &self.next_cursor)
+            .finish()
+    }
 }
 
 /// Dynamic segment rules are recursive and intentionally represented as JSON.
