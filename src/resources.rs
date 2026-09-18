@@ -54,6 +54,84 @@ fn validate_send(request: &SendRequest) -> Result<(), Error> {
     Ok(())
 }
 
+fn validate_batch_send(request: &BatchSendRequest) -> Result<(), Error> {
+    if request.messages.is_empty() || request.messages.len() > 100 {
+        return Err(Error::Validation(
+            "messages must contain between 1 and 100 items".into(),
+        ));
+    }
+    let mut keys = std::collections::BTreeSet::new();
+    for message in &request.messages {
+        validate_idempotency_key(&message.idempotency_key)?;
+        if !keys.insert(&message.idempotency_key) {
+            return Err(Error::Validation(
+                "each batch message must use a distinct idempotency_key".into(),
+            ));
+        }
+        validate_send(&message.request)?;
+    }
+    Ok(())
+}
+
+fn validate_timeline_params(params: &MessageTimelineParams) -> Result<(), Error> {
+    if params.cursor.as_ref().is_some_and(String::is_empty) {
+        return Err(Error::Validation("cursor must not be empty".into()));
+    }
+    if params
+        .limit
+        .is_some_and(|limit| !(1..=100).contains(&limit))
+    {
+        return Err(Error::Validation("limit must be between 1 and 100".into()));
+    }
+    if params
+        .period
+        .as_deref()
+        .is_some_and(|period| !matches!(period, "24h" | "7d" | "14d" | "30d"))
+    {
+        return Err(Error::Validation(
+            "period must be 24h, 7d, 14d, or 30d".into(),
+        ));
+    }
+    if params.event_type.as_deref().is_some_and(|event_type| {
+        !matches!(
+            event_type,
+            "queued"
+                | "sent"
+                | "delivered"
+                | "deferred"
+                | "soft_bounce"
+                | "hard_bounce"
+                | "complaint"
+                | "open"
+                | "click"
+                | "unsubscribe"
+                | "rejected"
+                | "failed"
+                | "suppressed"
+        )
+    }) {
+        return Err(Error::Validation(
+            "event_type is not supported by the public contract".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_segment_preview(request: &SegmentPreviewRequest) -> Result<(), Error> {
+    if request
+        .limit
+        .is_some_and(|limit| !(1..=50).contains(&limit))
+    {
+        return Err(Error::Validation("limit must be between 1 and 50".into()));
+    }
+    if !request.definition.0.is_object() {
+        return Err(Error::Validation(
+            "definition must be a segment rule object".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_template_precondition(
     expected_version_id: Option<&String>,
     expected_updated_at: Option<&String>,
@@ -275,6 +353,39 @@ impl<'a> SendResource<'a> {
             )
             .await
     }
+
+    pub async fn batch(&self, request: &BatchSendRequest) -> Result<BatchSendResult, Error> {
+        validate_batch_send(request)?;
+        self.client
+            .request(
+                Method::POST,
+                "/v1/send/batch",
+                None,
+                Some(ViaPost::body(request)?),
+                None,
+            )
+            .await
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ContactsResource<'a> {
+    client: &'a ViaPost,
+}
+
+impl<'a> ContactsResource<'a> {
+    pub(crate) fn new(client: &'a ViaPost) -> Self {
+        Self { client }
+    }
+
+    pub async fn import_csv(&self, csv: &str) -> Result<ContactImportResult, Error> {
+        if csv.is_empty() || csv.len() > 2 * 1024 * 1024 {
+            return Err(Error::Validation(
+                "CSV import must contain 1 to 2097152 bytes".into(),
+            ));
+        }
+        self.client.request_csv("/v1/contacts/import", csv).await
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -362,6 +473,33 @@ impl<'a> MessagesResource<'a> {
             )
             .await
     }
+    pub async fn timeline(
+        &self,
+        params: MessageTimelineParams,
+    ) -> Result<MessageTimelinePage, Error> {
+        validate_timeline_params(&params)?;
+        self.client
+            .request(
+                Method::GET,
+                "/v1/messages/events",
+                Some(ViaPost::body(&params)?),
+                None,
+                None,
+            )
+            .await
+    }
+    pub async fn cancel(&self, message_id: &str) -> Result<Message, Error> {
+        let id = path_parameter("message_id", message_id)?;
+        self.client
+            .request(
+                Method::POST,
+                &format!("/v1/messages/{id}/cancel"),
+                None,
+                None,
+                None,
+            )
+            .await
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -435,6 +573,54 @@ impl<'a> DomainsResource<'a> {
                 &format!("/v1/domains/{id}/dkim/rotate"),
                 None,
                 None,
+                None,
+            )
+            .await
+    }
+    pub async fn health(&self, domain_id: &str) -> Result<DomainHealth, Error> {
+        let id = path_parameter("domain_id", domain_id)?;
+        self.client
+            .request(
+                Method::GET,
+                &format!("/v1/domains/{id}/health"),
+                None,
+                None,
+                None,
+            )
+            .await
+    }
+    pub async fn inbound(&self, domain_id: &str) -> Result<InboundDomainConfiguration, Error> {
+        let id = path_parameter("domain_id", domain_id)?;
+        self.client
+            .request(
+                Method::GET,
+                &format!("/v1/domains/{id}/inbound"),
+                None,
+                None,
+                None,
+            )
+            .await
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SegmentsResource<'a> {
+    client: &'a ViaPost,
+}
+
+impl<'a> SegmentsResource<'a> {
+    pub(crate) fn new(client: &'a ViaPost) -> Self {
+        Self { client }
+    }
+
+    pub async fn preview(&self, request: &SegmentPreviewRequest) -> Result<SegmentPreview, Error> {
+        validate_segment_preview(request)?;
+        self.client
+            .request(
+                Method::POST,
+                "/v1/segments/preview",
+                None,
+                Some(ViaPost::body(request)?),
                 None,
             )
             .await
