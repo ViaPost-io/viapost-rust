@@ -19,8 +19,8 @@ use url::Url;
 use crate::{
     error::Error,
     resources::{
-        AutomationsResource, DomainsResource, MessagesResource, SendResource, TemplatesResource,
-        UsageResource, WebhooksResource,
+        AutomationsResource, ContactsResource, DomainsResource, MessagesResource, SegmentsResource,
+        SendResource, TemplatesResource, UsageResource, WebhooksResource,
     },
     VERSION,
 };
@@ -69,6 +69,9 @@ impl ViaPost {
     pub fn messages(&self) -> MessagesResource<'_> {
         MessagesResource::new(self)
     }
+    pub fn contacts(&self) -> ContactsResource<'_> {
+        ContactsResource::new(self)
+    }
     pub fn domains(&self) -> DomainsResource<'_> {
         DomainsResource::new(self)
     }
@@ -80,6 +83,9 @@ impl ViaPost {
     }
     pub fn automations(&self) -> AutomationsResource<'_> {
         AutomationsResource::new(self)
+    }
+    pub fn segments(&self) -> SegmentsResource<'_> {
+        SegmentsResource::new(self)
     }
     pub fn usage(&self) -> UsageResource<'_> {
         UsageResource::new(self)
@@ -188,6 +194,49 @@ impl ViaPost {
     ) -> Result<(), Error> {
         let _: Value = self.request(method, path, None, body, None).await?;
         Ok(())
+    }
+
+    pub(crate) async fn request_csv<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        csv: &str,
+    ) -> Result<T, Error> {
+        let url = self
+            .base_url
+            .join(path.trim_start_matches('/'))
+            .map_err(|_| {
+                Error::Validation("request path could not be joined to the base URL".into())
+            })?;
+        let mut headers = self.headers.clone();
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            HeaderValue::from_static("text/csv; charset=utf-8"),
+        );
+        let response = tokio::time::timeout(
+            self.timeout,
+            self.http
+                .request(Method::POST, url)
+                .headers(headers)
+                .body(csv.to_owned())
+                .send(),
+        )
+        .await
+        .map_err(|_| Error::Timeout {
+            timeout: self.timeout,
+        })?
+        .map_err(Error::Transport)?;
+        let status = response.status();
+        let response_headers = response.headers().clone();
+        let bytes = read_limited(response, self.max_response_bytes).await?;
+        if !status.is_success() {
+            let api_key = self
+                .headers
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "));
+            return Err(api_error(status, &response_headers, &bytes, api_key));
+        }
+        serde_json::from_slice(&bytes).map_err(Error::Decode)
     }
 }
 
