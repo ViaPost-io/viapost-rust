@@ -8,10 +8,11 @@ use std::{
 };
 
 use viapost::{
-    ClientBuilder, CreateWebhookRequest, CreateWebhookResponse, EmailStream, Error, Message,
-    MessageDetail, MessageListParams, MetricsParams, SendRequest, TemplateAssetPolicy,
-    TemplatePreconditionRequest, UpdateWebhookRequest, ViaPost, WebhookDeliveryListParams,
-    WebhookEndpoint,
+    BatchSendMessage, BatchSendRequest, ClientBuilder, CreateWebhookRequest, CreateWebhookResponse,
+    EmailStream, Error, Message, MessageDetail, MessageListParams, MessageTimelineEvent,
+    MessageTimelinePage, MessageTimelineParams, MetricsParams, SegmentDefinition,
+    SegmentPreviewRequest, SendRequest, TemplateAssetPolicy, TemplatePreconditionRequest,
+    UpdateWebhookRequest, ViaPost, WebhookDeliveryListParams, WebhookEndpoint,
 };
 
 fn server(responses: Vec<&'static str>) -> (String, Arc<Mutex<Vec<String>>>) {
@@ -169,10 +170,13 @@ fn one_time_credentials_are_redacted_from_debug_output() {
             recipient_domain: "example.com".to_owned(),
             api_key_id: None,
             created_at: "2026-09-16T00:00:00Z".to_owned(),
+            scheduled_at: None,
+            cancelled_at: None,
             queued_at: None,
             sent_at: None,
             delivered_at: None,
             failed_at: None,
+            suppressed_at: None,
             first_opened_at: None,
             first_clicked_at: None,
             last_error: None,
@@ -250,6 +254,251 @@ async fn message_metrics_forwards_optional_domain_filter() {
     let captured = requests.lock().unwrap();
     assert!(captured[0].contains("days=7"));
     assert!(captured[0].contains("domain_id=11111111-1111-1111-1111-111111111111"));
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // Exercises all seven newly exposed paths in one ordered mock exchange.
+async fn new_contract_resources_use_correct_methods_paths_and_payloads() {
+    let import = r#"{"total":1,"created":1,"skipped":0,"duplicates":0}"#;
+    let health = r#"{"domain_id":"11111111-1111-1111-1111-111111111111","domain_name":"example.com","domain_status":"verified","score":100,"status":"healthy","calculation_version":"domain_health_v1","evaluated_at":"2026-09-18T00:00:00Z","dns_checked_at":null,"window":{"start":"2026-08-19T00:00:00Z","end":"2026-09-18T00:00:00Z","days":30},"minimum_sample_size":100,"sample_size":100,"checks":{"spf":{"verified":true,"status":"pass","points":10,"max_points":10},"dkim":{"verified":true,"status":"pass","points":20,"max_points":20},"dmarc":{"verified":true,"status":"pass","points":15,"max_points":15},"delivery_rate":{"numerator":100,"denominator":100,"rate_basis_points":10000,"status":"pass","points":35,"max_points":35},"bounce_rate":{"numerator":0,"denominator":100,"rate_basis_points":0,"status":"pass","points":20,"max_points":20}},"recommendations":[]}"#;
+    let inbound = r#"{"recipient_domain":"example.com","status":"ready","mx":{"host":"inbound.viapost.io","priority":10,"status":"configured"}}"#;
+    let timeline = r#"{"data":[],"next_cursor":null}"#;
+    let message = r#"{"id":"11111111-1111-1111-1111-111111111111","status":"cancelled","stream":"transactional","from_address":"hello@example.com","to_address":"person@example.com","recipient_domain":"example.com","created_at":"2026-09-18T00:00:00Z"}"#;
+    let preview = r#"{"contact_count":0,"data":[]}"#;
+    let batch = r#"{"results":[{"index":0,"accepted":[],"rejected":[],"error":null}]}"#;
+    let responses = [import, health, inbound, timeline, message, preview, batch]
+        .into_iter()
+        .map(|body| {
+            Box::leak(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).into_boxed_str()) as &'static str
+        })
+        .collect();
+    let (base_url, requests) = server(responses);
+    let client = ViaPost::builder("vp_test")
+        .base_url(base_url)
+        .unwrap()
+        .build()
+        .unwrap();
+
+    assert_eq!(
+        client
+            .contacts()
+            .import_csv("email,first_name,last_name,subscribed,properties\na@example.com,,,,\n")
+            .await
+            .unwrap()
+            .created,
+        1
+    );
+    assert_eq!(
+        client
+            .domains()
+            .health("11111111-1111-1111-1111-111111111111")
+            .await
+            .unwrap()
+            .score,
+        Some(100)
+    );
+    assert_eq!(
+        client
+            .domains()
+            .inbound("11111111-1111-1111-1111-111111111111")
+            .await
+            .unwrap()
+            .mx
+            .priority,
+        10
+    );
+    assert!(client
+        .messages()
+        .timeline(MessageTimelineParams {
+            limit: Some(10),
+            period: Some("7d".to_owned()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .data
+        .is_empty());
+    assert_eq!(
+        client
+            .messages()
+            .cancel("11111111-1111-1111-1111-111111111111")
+            .await
+            .unwrap()
+            .status,
+        "cancelled"
+    );
+    assert_eq!(
+        client
+            .segments()
+            .preview(&SegmentPreviewRequest {
+                definition: SegmentDefinition(
+                    serde_json::json!({"all":[{"field":"subscribed","operator":"eq","value":true}]})
+                ),
+                limit: Some(20)
+            })
+            .await
+            .unwrap()
+            .contact_count,
+        0
+    );
+    let request = BatchSendRequest {
+        messages: vec![BatchSendMessage {
+            idempotency_key: "batch-1".to_owned(),
+            request: SendRequest::new("hello@example.com", ["person@example.com"]),
+        }],
+    };
+    assert_eq!(
+        client.send().batch(&request).await.unwrap().results.len(),
+        1
+    );
+
+    let captured = requests.lock().unwrap();
+    assert!(captured[0].starts_with("POST /v1/contacts/import"));
+    assert!(captured[0]
+        .to_ascii_lowercase()
+        .contains("content-type: text/csv; charset=utf-8"));
+    assert!(captured[1].starts_with("GET /v1/domains/"));
+    assert!(captured[1].contains("/health"));
+    assert!(captured[2].contains("/inbound"));
+    assert!(captured[3].contains("GET /v1/messages/events?limit=10&period=7d"));
+    assert!(captured[4].contains("POST /v1/messages/"));
+    assert!(captured[4].contains("/cancel"));
+    assert!(captured[5].starts_with("POST /v1/segments/preview"));
+    assert!(captured[6].starts_with("POST /v1/send/batch"));
+}
+
+#[tokio::test]
+async fn new_contract_validation_rejects_invalid_requests_before_network() {
+    let client = ViaPost::new("vp_test").unwrap();
+    assert!(matches!(
+        client.contacts().import_csv("").await,
+        Err(Error::Validation(_))
+    ));
+    assert!(matches!(
+        client
+            .messages()
+            .timeline(MessageTimelineParams {
+                limit: Some(101),
+                ..Default::default()
+            })
+            .await,
+        Err(Error::Validation(_))
+    ));
+    assert!(matches!(
+        client
+            .segments()
+            .preview(&SegmentPreviewRequest {
+                definition: SegmentDefinition(serde_json::json!(false)),
+                limit: None
+            })
+            .await,
+        Err(Error::Validation(_))
+    ));
+    let request = BatchSendRequest { messages: vec![] };
+    assert!(matches!(
+        client.send().batch(&request).await,
+        Err(Error::Validation(_))
+    ));
+}
+
+#[test]
+fn timeline_debug_redacts_delivery_metadata() {
+    let timeline = MessageTimelinePage {
+        data: vec![MessageTimelineEvent {
+            id: "event-id".to_owned(),
+            message_id: "message-id".to_owned(),
+            event_type: "delivered".to_owned(),
+            occurred_at: "2026-09-18T00:00:00Z".to_owned(),
+            recipient: Some("person@example.com".to_owned()),
+            smtp_code: Some(250),
+            enhanced_code: Some("2.0.0".to_owned()),
+            diagnostic: Some("private SMTP diagnostic".to_owned()),
+            mx_host: Some("mx.private.example".to_owned()),
+            click_url: Some("https://private.example/click?token=secret".to_owned()),
+        }],
+        next_cursor: Some("opaque-cursor".to_owned()),
+    };
+    let debug = format!("{timeline:?}");
+    for secret in [
+        "person@example.com",
+        "private SMTP diagnostic",
+        "mx.private.example",
+        "https://private.example/click?token=secret",
+    ] {
+        assert!(!debug.contains(secret));
+    }
+    assert!(debug.contains("[REDACTED]"));
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn segment_preview_validates_published_recursive_rule_bounds_before_network() {
+    let client = ViaPost::builder("vp_test")
+        .base_url("http://127.0.0.1:9")
+        .unwrap()
+        .build()
+        .unwrap();
+    let valid = SegmentPreviewRequest {
+        definition: SegmentDefinition(serde_json::json!({
+            "all": [{"any": [{"field": "property", "key": "plan", "operator": "eq", "value": "pro"}]}]
+        })),
+        limit: Some(50),
+    };
+    assert!(matches!(
+        client.segments().preview(&valid).await,
+        Err(Error::Transport(_))
+    ));
+
+    let depth_five = SegmentPreviewRequest {
+        definition: SegmentDefinition(
+            serde_json::json!({"all":[{"any":[{"all":[{"any":[{"all":[{"field":"subscribed","operator":"eq","value":true}]}]}]}]}]}),
+        ),
+        limit: None,
+    };
+    assert!(matches!(
+        client.segments().preview(&depth_five).await,
+        Err(Error::Validation(_))
+    ));
+
+    let too_many_children = SegmentPreviewRequest {
+        definition: SegmentDefinition(
+            serde_json::json!({"all": (0..26).map(|_| serde_json::json!({"field":"subscribed","operator":"eq","value":true})).collect::<Vec<_>>() }),
+        ),
+        limit: None,
+    };
+    assert!(matches!(
+        client.segments().preview(&too_many_children).await,
+        Err(Error::Validation(_))
+    ));
+
+    let too_many_predicates = SegmentPreviewRequest {
+        definition: SegmentDefinition(
+            serde_json::json!({"all": (0..5).map(|_| serde_json::json!({"any": (0..25).map(|_| serde_json::json!({"field":"subscribed","operator":"eq","value":true})).collect::<Vec<_>>() })).collect::<Vec<_>>() }),
+        ),
+        limit: None,
+    };
+    assert!(matches!(
+        client.segments().preview(&too_many_predicates).await,
+        Err(Error::Validation(_))
+    ));
+
+    for invalid in [
+        serde_json::json!({"field":"subscribed","operator":"eq","value":"true"}),
+        serde_json::json!({"field":"property","key":"", "operator":"exists"}),
+        serde_json::json!({"event_name":"viapost:internal","operator":"occurred","within_days":1}),
+        serde_json::json!({"field":"email","operator":"contains","value":""}),
+        serde_json::json!({"field":"created_at","operator":"after","value":"not-a-timestamp"}),
+        serde_json::json!({"field":"subscribed","operator":"eq","value":true,"extra":false}),
+    ] {
+        let request = SegmentPreviewRequest {
+            definition: SegmentDefinition(invalid),
+            limit: None,
+        };
+        assert!(matches!(
+            client.segments().preview(&request).await,
+            Err(Error::Validation(_))
+        ));
+    }
 }
 
 #[tokio::test]
