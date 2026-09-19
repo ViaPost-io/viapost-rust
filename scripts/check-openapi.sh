@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-expected='cb61b81b3276679426504eae4161e610eb5520aca2cd71cd267ed62628c518e4'
-source_commit='891adebbe79a26178fb780ec986172c890a5e261'
+expected='c5d5ae1d85e61b4e14e09351b14146465ce357075d2ed5fe4e034f6ff6693dc1'
+source_commit='2b9f310f2f2a737e1eed9ba68c99a8d1b56b6d10'
 contract="${1:-openapi.yaml}"
 
 if command -v sha256sum >/dev/null 2>&1; then

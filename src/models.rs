@@ -103,6 +103,8 @@ pub struct SendRequest {
     #[serde(default, skip_serializing_if = "JsonObject::is_empty")]
     pub metadata: JsonObject,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduled_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub template_id: Option<String>,
     #[serde(default, skip_serializing_if = "JsonObject::is_empty")]
     pub variables: JsonObject,
@@ -129,6 +131,7 @@ impl SendRequest {
             stream: EmailStream::default(),
             tags: Vec::new(),
             metadata: JsonObject::new(),
+            scheduled_at: None,
             template_id: None,
             variables: JsonObject::new(),
             attachments: Vec::new(),
@@ -190,10 +193,13 @@ pub struct Message {
     pub recipient_domain: String,
     pub api_key_id: Option<String>,
     pub created_at: String,
+    pub scheduled_at: Option<String>,
+    pub cancelled_at: Option<String>,
     pub queued_at: Option<String>,
     pub sent_at: Option<String>,
     pub delivered_at: Option<String>,
     pub failed_at: Option<String>,
+    pub suppressed_at: Option<String>,
     pub first_opened_at: Option<String>,
     pub first_clicked_at: Option<String>,
     pub last_error: Option<String>,
@@ -689,6 +695,247 @@ pub struct RotateWebhookSecretResponse {
     pub endpoint: WebhookEndpoint,
     pub secret: Option<String>,
     pub rotated_at: String,
+}
+
+/// Result of an atomic CSV contact import.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContactImportResult {
+    pub total: u64,
+    pub created: u64,
+    pub skipped: u64,
+    pub duplicates: u64,
+}
+
+/// A contact returned in a segment preview. Contact fields can contain PII;
+/// callers should avoid logging this value wholesale.
+#[derive(Clone, Deserialize)]
+pub struct Contact {
+    pub id: String,
+    pub email: String,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub subscribed: bool,
+    pub properties: JsonObject,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl fmt::Debug for Contact {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Contact")
+            .field("id", &self.id)
+            .field("email", &"[REDACTED]")
+            .field(
+                "first_name",
+                &self.first_name.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("last_name", &self.last_name.as_ref().map(|_| "[REDACTED]"))
+            .field("subscribed", &self.subscribed)
+            .field("properties", &"[REDACTED]")
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct InboundDomainConfiguration {
+    pub recipient_domain: String,
+    pub status: String,
+    pub mx: InboundMXConfiguration,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct InboundMXConfiguration {
+    pub host: String,
+    pub priority: u16,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DomainHealth {
+    pub domain_id: String,
+    pub domain_name: String,
+    pub domain_status: DomainStatus,
+    pub score: Option<u8>,
+    pub status: String,
+    pub calculation_version: String,
+    pub evaluated_at: String,
+    pub dns_checked_at: Option<String>,
+    pub window: DomainHealthWindow,
+    pub minimum_sample_size: u64,
+    pub sample_size: u64,
+    pub checks: DomainHealthChecks,
+    pub recommendations: Vec<DomainHealthRecommendation>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DomainHealthWindow {
+    pub start: String,
+    pub end: String,
+    pub days: u8,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DomainHealthChecks {
+    pub spf: DomainHealthDNSCheck,
+    pub dkim: DomainHealthDNSCheck,
+    pub dmarc: DomainHealthDNSCheck,
+    pub delivery_rate: DomainHealthRateCheck,
+    pub bounce_rate: DomainHealthRateCheck,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DomainHealthDNSCheck {
+    pub verified: bool,
+    pub status: String,
+    pub points: u8,
+    pub max_points: u8,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DomainHealthRateCheck {
+    pub numerator: u64,
+    pub denominator: u64,
+    pub rate_basis_points: Option<u16>,
+    pub status: String,
+    pub points: Option<u8>,
+    pub max_points: u8,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DomainHealthRecommendation {
+    pub code: String,
+    pub check: String,
+    pub severity: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MessageTimelineParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct MessageTimelineEvent {
+    pub id: String,
+    pub message_id: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub occurred_at: String,
+    pub recipient: Option<String>,
+    pub smtp_code: Option<i64>,
+    pub enhanced_code: Option<String>,
+    pub diagnostic: Option<String>,
+    pub mx_host: Option<String>,
+    pub click_url: Option<String>,
+}
+
+impl fmt::Debug for MessageTimelineEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MessageTimelineEvent")
+            .field("id", &self.id)
+            .field("message_id", &self.message_id)
+            .field("event_type", &self.event_type)
+            .field("occurred_at", &self.occurred_at)
+            .field("recipient", &self.recipient.as_ref().map(|_| "[REDACTED]"))
+            .field("smtp_code", &self.smtp_code)
+            .field("enhanced_code", &self.enhanced_code)
+            .field(
+                "diagnostic",
+                &self.diagnostic.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("mx_host", &self.mx_host.as_ref().map(|_| "[REDACTED]"))
+            .field("click_url", &self.click_url.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
+#[derive(Clone, Deserialize)]
+pub struct MessageTimelinePage {
+    pub data: Vec<MessageTimelineEvent>,
+    pub next_cursor: Option<String>,
+}
+
+impl fmt::Debug for MessageTimelinePage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MessageTimelinePage")
+            .field("data", &"[REDACTED]")
+            .field("next_cursor", &self.next_cursor)
+            .finish()
+    }
+}
+
+/// Dynamic segment rules are recursive and intentionally represented as JSON.
+/// This preserves all current contract variants without silently discarding a
+/// predicate added by the API; the service remains the semantic validator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SegmentDefinition(pub Value);
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SegmentPreviewRequest {
+    pub definition: SegmentDefinition,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u8>,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct SegmentPreview {
+    pub contact_count: u64,
+    pub data: Vec<Contact>,
+}
+
+impl fmt::Debug for SegmentPreview {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SegmentPreview")
+            .field("contact_count", &self.contact_count)
+            .field("data", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchSendMessage {
+    pub idempotency_key: String,
+    pub request: SendRequest,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchSendRequest {
+    pub messages: Vec<BatchSendMessage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BatchSendError {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BatchSendResultItem {
+    pub index: u64,
+    pub accepted: Option<Vec<AcceptedMessage>>,
+    pub rejected: Option<Vec<RejectedMessage>>,
+    pub error: Option<BatchSendError>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BatchSendResult {
+    pub results: Vec<BatchSendResultItem>,
 }
 
 impl fmt::Debug for RotateWebhookSecretResponse {

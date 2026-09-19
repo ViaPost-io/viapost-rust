@@ -3,6 +3,7 @@ use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue, ACCEPT},
     Method,
 };
+use serde_json::{Map, Value};
 use url::{Host, Url};
 
 use crate::models::*;
@@ -52,6 +53,264 @@ fn validate_send(request: &SendRequest) -> Result<(), Error> {
         ));
     }
     Ok(())
+}
+
+fn validate_batch_send(request: &BatchSendRequest) -> Result<(), Error> {
+    if request.messages.is_empty() || request.messages.len() > 100 {
+        return Err(Error::Validation(
+            "messages must contain between 1 and 100 items".into(),
+        ));
+    }
+    let mut keys = std::collections::BTreeSet::new();
+    for message in &request.messages {
+        validate_idempotency_key(&message.idempotency_key)?;
+        if !keys.insert(&message.idempotency_key) {
+            return Err(Error::Validation(
+                "each batch message must use a distinct idempotency_key".into(),
+            ));
+        }
+        validate_send(&message.request)?;
+    }
+    Ok(())
+}
+
+fn validate_timeline_params(params: &MessageTimelineParams) -> Result<(), Error> {
+    if params.cursor.as_ref().is_some_and(String::is_empty) {
+        return Err(Error::Validation("cursor must not be empty".into()));
+    }
+    if params
+        .limit
+        .is_some_and(|limit| !(1..=100).contains(&limit))
+    {
+        return Err(Error::Validation("limit must be between 1 and 100".into()));
+    }
+    if params
+        .period
+        .as_deref()
+        .is_some_and(|period| !matches!(period, "24h" | "7d" | "14d" | "30d"))
+    {
+        return Err(Error::Validation(
+            "period must be 24h, 7d, 14d, or 30d".into(),
+        ));
+    }
+    if params.event_type.as_deref().is_some_and(|event_type| {
+        !matches!(
+            event_type,
+            "queued"
+                | "sent"
+                | "delivered"
+                | "deferred"
+                | "soft_bounce"
+                | "hard_bounce"
+                | "complaint"
+                | "open"
+                | "click"
+                | "unsubscribe"
+                | "rejected"
+                | "failed"
+                | "suppressed"
+        )
+    }) {
+        return Err(Error::Validation(
+            "event_type is not supported by the public contract".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_segment_preview(request: &SegmentPreviewRequest) -> Result<(), Error> {
+    if request
+        .limit
+        .is_some_and(|limit| !(1..=50).contains(&limit))
+    {
+        return Err(Error::Validation("limit must be between 1 and 50".into()));
+    }
+    let mut predicates = 0;
+    validate_segment_rule(&request.definition.0, 1, &mut predicates)
+}
+
+fn validate_segment_rule(value: &Value, depth: u8, predicates: &mut u16) -> Result<(), Error> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| Error::Validation("segment rule must be an object".into()))?;
+    let groups = ["all", "any"]
+        .into_iter()
+        .filter(|key| object.contains_key(*key))
+        .collect::<Vec<_>>();
+    if !groups.is_empty() {
+        if groups.len() != 1 || object.len() != 1 {
+            return Err(Error::Validation(
+                "segment group must contain exactly one of all or any".into(),
+            ));
+        }
+        if depth > 4 {
+            return Err(Error::Validation(
+                "segment group depth must not exceed 4".into(),
+            ));
+        }
+        let children = object[groups[0]]
+            .as_array()
+            .ok_or_else(|| Error::Validation("segment group value must be an array".into()))?;
+        if !(1..=25).contains(&children.len()) {
+            return Err(Error::Validation(
+                "segment group must contain between 1 and 25 rules".into(),
+            ));
+        }
+        for child in children {
+            validate_segment_rule(child, depth + 1, predicates)?;
+        }
+        return Ok(());
+    }
+
+    *predicates += 1;
+    if *predicates > 100 {
+        return Err(Error::Validation(
+            "segment definition must not exceed 100 predicates".into(),
+        ));
+    }
+    validate_segment_leaf(object)
+}
+
+fn validate_segment_leaf(object: &Map<String, Value>) -> Result<(), Error> {
+    if object.contains_key("event_name") {
+        require_exact_keys(object, &["event_name", "operator", "within_days"])?;
+        let name = required_string(object, "event_name", 1, 120)?;
+        let valid_name = !name.starts_with("viapost:")
+            && name.split('.').all(|part| {
+                !part.is_empty()
+                    && part.bytes().enumerate().all(|(index, byte)| {
+                        if index == 0 {
+                            byte.is_ascii_alphabetic()
+                        } else {
+                            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+                        }
+                    })
+            });
+        if !valid_name || required_string(object, "operator", 8, 8)? != "occurred" {
+            return Err(Error::Validation("invalid custom event predicate".into()));
+        }
+        return require_integer_range(object, "within_days", 1, 90);
+    }
+
+    let field = required_string(object, "field", 1, 12)?;
+    match field {
+        "email" | "first_name" | "last_name" => {
+            let has_value = object.contains_key("value");
+            let operator = required_string(object, "operator", 2, 12)?;
+            if matches!(operator, "is_set" | "is_not_set") {
+                require_exact_keys(object, &["field", "operator"])
+            } else {
+                require_exact_keys(object, &["field", "operator", "value"])?;
+                if !matches!(
+                    operator,
+                    "eq" | "neq" | "contains" | "starts_with" | "ends_with"
+                ) || !has_value
+                {
+                    return Err(Error::Validation("invalid text predicate operator".into()));
+                }
+                required_string(object, "value", 1, 256).map(|_| ())
+            }
+        }
+        "subscribed" => {
+            require_exact_keys(object, &["field", "operator", "value"])?;
+            if required_string(object, "operator", 2, 2)? != "eq"
+                || !object.get("value").is_some_and(Value::is_boolean)
+            {
+                return Err(Error::Validation("invalid subscribed predicate".into()));
+            }
+            Ok(())
+        }
+        "created_at" => {
+            require_exact_keys(object, &["field", "operator", "value"])?;
+            if !matches!(
+                required_string(object, "operator", 5, 6)?,
+                "before" | "after"
+            ) || !is_utc_timestamp(required_string(object, "value", 20, 30)?)
+            {
+                return Err(Error::Validation("invalid created_at predicate".into()));
+            }
+            Ok(())
+        }
+        "property" => {
+            let operator = required_string(object, "operator", 2, 10)?;
+            if matches!(operator, "exists" | "not_exists") {
+                require_exact_keys(object, &["field", "key", "operator"])?;
+            } else {
+                require_exact_keys(object, &["field", "key", "operator", "value"])?;
+                if !matches!(operator, "eq" | "neq")
+                    || !object.get("value").is_some_and(|value| {
+                        value.is_string() || value.is_number() || value.is_boolean()
+                    })
+                {
+                    return Err(Error::Validation("invalid property value predicate".into()));
+                }
+            }
+            required_string(object, "key", 1, 128).map(|_| ())
+        }
+        _ => Err(Error::Validation(
+            "unsupported segment predicate field".into(),
+        )),
+    }
+}
+
+fn require_exact_keys(object: &Map<String, Value>, expected: &[&str]) -> Result<(), Error> {
+    if object.len() != expected.len() || expected.iter().any(|key| !object.contains_key(*key)) {
+        return Err(Error::Validation(
+            "segment predicate has an invalid shape".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn required_string<'a>(
+    object: &'a Map<String, Value>,
+    key: &str,
+    min: usize,
+    max: usize,
+) -> Result<&'a str, Error> {
+    let value = object
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| (min..=max).contains(&value.len()))
+        .ok_or_else(|| Error::Validation(format!("segment predicate {key} is invalid")))?;
+    Ok(value)
+}
+
+fn require_integer_range(
+    object: &Map<String, Value>,
+    key: &str,
+    min: u64,
+    max: u64,
+) -> Result<(), Error> {
+    object
+        .get(key)
+        .and_then(Value::as_u64)
+        .filter(|value| (min..=max).contains(value))
+        .map(|_| ())
+        .ok_or_else(|| Error::Validation(format!("segment predicate {key} is invalid")))
+}
+
+fn is_utc_timestamp(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if !(20..=30).contains(&bytes.len()) || !value.ends_with('Z') {
+        return false;
+    }
+    for index in [4, 7, 10, 13, 16] {
+        let expected = match index {
+            4 | 7 => b'-',
+            10 => b'T',
+            _ => b':',
+        };
+        if bytes.get(index) != Some(&expected) {
+            return false;
+        }
+    }
+    bytes.iter().enumerate().all(|(index, byte)| {
+        matches!(index, 4 | 7 | 10 | 13 | 16)
+            || index == bytes.len() - 1
+            || *byte == b'.'
+            || byte.is_ascii_digit()
+    })
 }
 
 fn validate_template_precondition(
@@ -275,6 +534,39 @@ impl<'a> SendResource<'a> {
             )
             .await
     }
+
+    pub async fn batch(&self, request: &BatchSendRequest) -> Result<BatchSendResult, Error> {
+        validate_batch_send(request)?;
+        self.client
+            .request(
+                Method::POST,
+                "/v1/send/batch",
+                None,
+                Some(ViaPost::body(request)?),
+                None,
+            )
+            .await
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ContactsResource<'a> {
+    client: &'a ViaPost,
+}
+
+impl<'a> ContactsResource<'a> {
+    pub(crate) fn new(client: &'a ViaPost) -> Self {
+        Self { client }
+    }
+
+    pub async fn import_csv(&self, csv: &str) -> Result<ContactImportResult, Error> {
+        if csv.is_empty() || csv.len() > 2 * 1024 * 1024 {
+            return Err(Error::Validation(
+                "CSV import must contain 1 to 2097152 bytes".into(),
+            ));
+        }
+        self.client.request_csv("/v1/contacts/import", csv).await
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -362,6 +654,33 @@ impl<'a> MessagesResource<'a> {
             )
             .await
     }
+    pub async fn timeline(
+        &self,
+        params: MessageTimelineParams,
+    ) -> Result<MessageTimelinePage, Error> {
+        validate_timeline_params(&params)?;
+        self.client
+            .request(
+                Method::GET,
+                "/v1/messages/events",
+                Some(ViaPost::body(&params)?),
+                None,
+                None,
+            )
+            .await
+    }
+    pub async fn cancel(&self, message_id: &str) -> Result<Message, Error> {
+        let id = path_parameter("message_id", message_id)?;
+        self.client
+            .request(
+                Method::POST,
+                &format!("/v1/messages/{id}/cancel"),
+                None,
+                None,
+                None,
+            )
+            .await
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -435,6 +754,54 @@ impl<'a> DomainsResource<'a> {
                 &format!("/v1/domains/{id}/dkim/rotate"),
                 None,
                 None,
+                None,
+            )
+            .await
+    }
+    pub async fn health(&self, domain_id: &str) -> Result<DomainHealth, Error> {
+        let id = path_parameter("domain_id", domain_id)?;
+        self.client
+            .request(
+                Method::GET,
+                &format!("/v1/domains/{id}/health"),
+                None,
+                None,
+                None,
+            )
+            .await
+    }
+    pub async fn inbound(&self, domain_id: &str) -> Result<InboundDomainConfiguration, Error> {
+        let id = path_parameter("domain_id", domain_id)?;
+        self.client
+            .request(
+                Method::GET,
+                &format!("/v1/domains/{id}/inbound"),
+                None,
+                None,
+                None,
+            )
+            .await
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SegmentsResource<'a> {
+    client: &'a ViaPost,
+}
+
+impl<'a> SegmentsResource<'a> {
+    pub(crate) fn new(client: &'a ViaPost) -> Self {
+        Self { client }
+    }
+
+    pub async fn preview(&self, request: &SegmentPreviewRequest) -> Result<SegmentPreview, Error> {
+        validate_segment_preview(request)?;
+        self.client
+            .request(
+                Method::POST,
+                "/v1/segments/preview",
+                None,
+                Some(ViaPost::body(request)?),
                 None,
             )
             .await

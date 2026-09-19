@@ -22,8 +22,8 @@ pub use client::{ClientBuilder, ViaPost, DEFAULT_BASE_URL, DEFAULT_MAX_RESPONSE_
 pub use error::Error;
 pub use models::*;
 pub use resources::{
-    AutomationsResource, DomainsResource, MessagesResource, SendResource, TemplatesResource,
-    UsageResource, WebhooksResource,
+    AutomationsResource, ContactsResource, DomainsResource, MessagesResource, SegmentsResource,
+    SendResource, TemplatesResource, UsageResource, WebhooksResource,
 };
 
 /// Crate version embedded in the SDK user agent.
