@@ -782,6 +782,115 @@ impl<'a> DomainsResource<'a> {
             )
             .await
     }
+
+    pub async fn list_tracking_domains(
+        &self,
+        domain_id: &str,
+    ) -> Result<TrackingDomainList, Error> {
+        let domain_id = path_parameter("domain_id", domain_id)?;
+        self.client
+            .request(
+                Method::GET,
+                &format!("/v1/domains/{domain_id}/tracking-domains"),
+                None,
+                None,
+                None,
+            )
+            .await
+    }
+
+    pub async fn create_tracking_domain(
+        &self,
+        domain_id: &str,
+        request: &CreateTrackingDomainRequest,
+    ) -> Result<TrackingDomainProofResponse, Error> {
+        let domain_id = path_parameter("domain_id", domain_id)?;
+        self.client
+            .request(
+                Method::POST,
+                &format!("/v1/domains/{domain_id}/tracking-domains"),
+                None,
+                Some(ViaPost::body(request)?),
+                None,
+            )
+            .await
+    }
+
+    pub async fn retrieve_tracking_domain(
+        &self,
+        domain_id: &str,
+        tracking_domain_id: &str,
+    ) -> Result<TrackingDomainResponse, Error> {
+        self.tracking_domain_request(Method::GET, domain_id, tracking_domain_id, "")
+            .await
+    }
+
+    pub async fn verify_tracking_domain(
+        &self,
+        domain_id: &str,
+        tracking_domain_id: &str,
+    ) -> Result<TrackingDomainResponse, Error> {
+        self.tracking_domain_request(Method::POST, domain_id, tracking_domain_id, "/verify")
+            .await
+    }
+
+    pub async fn activate_tracking_domain(
+        &self,
+        domain_id: &str,
+        tracking_domain_id: &str,
+    ) -> Result<TrackingDomainResponse, Error> {
+        self.tracking_domain_request(Method::POST, domain_id, tracking_domain_id, "/activate")
+            .await
+    }
+
+    pub async fn revoke_tracking_domain(
+        &self,
+        domain_id: &str,
+        tracking_domain_id: &str,
+    ) -> Result<TrackingDomainResponse, Error> {
+        self.tracking_domain_request(Method::POST, domain_id, tracking_domain_id, "/revoke")
+            .await
+    }
+
+    pub async fn rotate_tracking_domain_proof(
+        &self,
+        domain_id: &str,
+        tracking_domain_id: &str,
+    ) -> Result<TrackingDomainProofResponse, Error> {
+        let domain_id = path_parameter("domain_id", domain_id)?;
+        let tracking_domain_id = path_parameter("tracking_domain_id", tracking_domain_id)?;
+        self.client
+            .request(
+                Method::POST,
+                &format!(
+                    "/v1/domains/{domain_id}/tracking-domains/{tracking_domain_id}/proof/rotate"
+                ),
+                None,
+                None,
+                None,
+            )
+            .await
+    }
+
+    async fn tracking_domain_request(
+        &self,
+        method: Method,
+        domain_id: &str,
+        tracking_domain_id: &str,
+        suffix: &str,
+    ) -> Result<TrackingDomainResponse, Error> {
+        let domain_id = path_parameter("domain_id", domain_id)?;
+        let tracking_domain_id = path_parameter("tracking_domain_id", tracking_domain_id)?;
+        self.client
+            .request(
+                method,
+                &format!("/v1/domains/{domain_id}/tracking-domains/{tracking_domain_id}{suffix}"),
+                None,
+                None,
+                None,
+            )
+            .await
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

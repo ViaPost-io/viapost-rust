@@ -315,6 +315,79 @@ pub struct DomainMetrics {
     pub clicked: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliverabilityProviderName {
+    Gmail,
+    Outlook,
+    Yahoo,
+    AppleMail,
+    Uol,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliverabilityRejectionCause {
+    SoftBounce,
+    HardBounce,
+    PolicyBlock,
+    NonexistentDomain,
+    Other,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeliverabilityProviderMetrics {
+    pub provider: DeliverabilityProviderName,
+    pub total: u64,
+    pub delivered: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeliverabilityRejections {
+    pub soft_bounce: u64,
+    pub hard_bounce: u64,
+    pub policy_block: u64,
+    pub nonexistent_domain: u64,
+    pub other: u64,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct DeliverabilityProblemDomain {
+    pub recipient_domain: String,
+    pub sent: u64,
+    pub rejected: u64,
+    pub primary_reason: DeliverabilityRejectionCause,
+}
+
+impl fmt::Debug for DeliverabilityProblemDomain {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DeliverabilityProblemDomain")
+            .field("recipient_domain", &"[REDACTED]")
+            .field("sent", &self.sent)
+            .field("rejected", &self.rejected)
+            .field("primary_reason", &self.primary_reason)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeliverabilityVolumeDay {
+    pub date: String,
+    pub sent: u64,
+    pub rejected: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeliverabilityMetrics {
+    pub providers: Vec<DeliverabilityProviderMetrics>,
+    pub rejections: DeliverabilityRejections,
+    pub previous_rejections: DeliverabilityRejections,
+    pub problem_domains: Vec<DeliverabilityProblemDomain>,
+    pub volume: Vec<DeliverabilityVolumeDay>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct MetricsResponse {
     pub since: String,
@@ -323,6 +396,7 @@ pub struct MetricsResponse {
     pub previous: MetricsSummary,
     pub timeseries: Vec<MetricsTimeseriesDay>,
     pub by_domain: Vec<DomainMetrics>,
+    pub deliverability: DeliverabilityMetrics,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -402,6 +476,72 @@ pub struct RotateDkimResponse {
     pub selector: String,
     pub public_key: String,
     pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackingDomainState {
+    PendingProof,
+    Verified,
+    Provisioning,
+    Active,
+    Suspended,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateTrackingDomainRequest {
+    pub hostname: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrackingDomain {
+    pub id: String,
+    pub hostname: String,
+    pub state: TrackingDomainState,
+    pub proof_expires_at: Option<String>,
+    pub proof_verified_at: Option<String>,
+    pub last_checked_at: Option<String>,
+    pub activated_at: Option<String>,
+    pub suspended_at: Option<String>,
+    pub revoked_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrackingDomainList {
+    pub tracking_domains: Vec<TrackingDomain>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrackingDomainResponse {
+    pub tracking_domain: TrackingDomain,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct TrackingDomainProof {
+    #[serde(rename = "type")]
+    pub record_type: String,
+    pub name: String,
+    pub value: String,
+}
+
+impl fmt::Debug for TrackingDomainProof {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TrackingDomainProof")
+            .field("record_type", &self.record_type)
+            .field("name", &self.name)
+            .field("value", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrackingDomainProofResponse {
+    pub tracking_domain: TrackingDomain,
+    pub proof: TrackingDomainProof,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
