@@ -57,6 +57,12 @@ Webhooks incluem criação e atualização com versão otimista, listagem e insp
 entregas, evento de teste, replay idempotente e rotação de secret. URLs de destino precisam usar
 HTTPS; operações mutáveis que podem ser repetidas exigem uma chave de idempotência explícita.
 
+Domínios incluem o ciclo de reserva, verificação, ativação, revogação e rotação da prova TXT de
+hostnames de tracking. O valor da prova só é retornado na reserva e na rotação; trate essas
+respostas como credenciais de uso único e não as registre em logs. As métricas de mensagens também
+incluem agregações tipadas de entregabilidade por provedor, causa de rejeição, domínio problemático
+e volume diário.
+
 ### Segurança e retries
 
 - timeout global de 60 segundos;
@@ -84,8 +90,8 @@ may be submitted more than once. Mutating calls are never retried by the SDK.
 ## Contract
 
 `openapi.yaml` is vendored from ViaPost `base-code` commit
-`2b9f310f2f2a737e1eed9ba68c99a8d1b56b6d10` with SHA-256
-`c5d5ae1d85e61b4e14e09351b14146465ce357075d2ed5fe4e034f6ff6693dc1`.
+`2c2eee4c5250b6205338965405a46eb02db4ce2f` with SHA-256
+`7c931b5a4a2a602d3c42341f2a70af9c49378600894b31adebfd333469b9e183`.
 
 ## License
 

@@ -8,11 +8,14 @@ use std::{
 };
 
 use viapost::{
-    BatchSendMessage, BatchSendRequest, ClientBuilder, CreateWebhookRequest, CreateWebhookResponse,
-    EmailStream, Error, Message, MessageDetail, MessageListParams, MessageTimelineEvent,
-    MessageTimelinePage, MessageTimelineParams, MetricsParams, SegmentDefinition,
-    SegmentPreviewRequest, SendRequest, TemplateAssetPolicy, TemplatePreconditionRequest,
-    UpdateWebhookRequest, ViaPost, WebhookDeliveryListParams, WebhookEndpoint,
+    BatchSendMessage, BatchSendRequest, ClientBuilder, CreateTrackingDomainRequest,
+    CreateWebhookRequest, CreateWebhookResponse, DeliverabilityProblemDomain,
+    DeliverabilityProviderName, DeliverabilityRejectionCause, EmailStream, Error, Message,
+    MessageDetail, MessageListParams, MessageTimelineEvent, MessageTimelinePage,
+    MessageTimelineParams, MetricsParams, SegmentDefinition, SegmentPreviewRequest, SendRequest,
+    TemplateAssetPolicy, TemplatePreconditionRequest, TrackingDomain, TrackingDomainProof,
+    TrackingDomainProofResponse, TrackingDomainState, UpdateWebhookRequest, ViaPost,
+    WebhookDeliveryListParams, WebhookEndpoint,
 };
 
 fn server(responses: Vec<&'static str>) -> (String, Arc<Mutex<Vec<String>>>) {
@@ -203,6 +206,44 @@ fn one_time_credentials_are_redacted_from_debug_output() {
     assert!(request_debug.contains("[REDACTED]"));
 }
 
+#[test]
+fn tracking_proof_and_problem_recipient_domain_are_redacted_from_debug_output() {
+    let proof_secret = "vp-proof-never-log-this";
+    let proof = TrackingDomainProofResponse {
+        tracking_domain: TrackingDomain {
+            id: "tracking-domain-id".to_owned(),
+            hostname: "click.example.com".to_owned(),
+            state: TrackingDomainState::PendingProof,
+            proof_expires_at: Some("2026-10-01T00:00:00Z".to_owned()),
+            proof_verified_at: None,
+            last_checked_at: None,
+            activated_at: None,
+            suspended_at: None,
+            revoked_at: None,
+            created_at: "2026-09-30T00:00:00Z".to_owned(),
+            updated_at: "2026-09-30T00:00:00Z".to_owned(),
+        },
+        proof: TrackingDomainProof {
+            record_type: "TXT".to_owned(),
+            name: "_viapost.click.example.com".to_owned(),
+            value: proof_secret.to_owned(),
+        },
+    };
+    let problem = DeliverabilityProblemDomain {
+        recipient_domain: "private-recipient.example".to_owned(),
+        sent: 10,
+        rejected: 2,
+        primary_reason: DeliverabilityRejectionCause::PolicyBlock,
+    };
+
+    let proof_debug = format!("{proof:?}");
+    let problem_debug = format!("{problem:?}");
+    assert!(!proof_debug.contains(proof_secret));
+    assert!(proof_debug.contains("[REDACTED]"));
+    assert!(!problem_debug.contains("private-recipient.example"));
+    assert!(problem_debug.contains("[REDACTED]"));
+}
+
 #[tokio::test]
 async fn api_errors_do_not_echo_the_api_key_or_raw_body_in_debug() {
     let secret = "vp_live_never_log_this";
@@ -254,6 +295,176 @@ async fn message_metrics_forwards_optional_domain_filter() {
     let captured = requests.lock().unwrap();
     assert!(captured[0].contains("days=7"));
     assert!(captured[0].contains("domain_id=11111111-1111-1111-1111-111111111111"));
+}
+
+#[tokio::test]
+async fn message_metrics_decodes_deliverability_analytics() {
+    let body = r#"{"since":"2026-09-01T00:00:00Z","until":"2026-09-08T00:00:00Z","current":{"total":12,"delivered":10,"opened":7,"clicked":3,"bounced":2,"complained":0},"previous":{"total":8,"delivered":7,"opened":4,"clicked":2,"bounced":1,"complained":0},"timeseries":[],"by_domain":[],"deliverability":{"providers":[{"provider":"gmail","total":8,"delivered":7}],"rejections":{"soft_bounce":1,"hard_bounce":2,"policy_block":3,"nonexistent_domain":4,"other":5},"previous_rejections":{"soft_bounce":0,"hard_bounce":1,"policy_block":1,"nonexistent_domain":0,"other":2},"problem_domains":[{"recipient_domain":"example.test","sent":6,"rejected":2,"primary_reason":"policy_block"}],"volume":[{"date":"2026-09-01","sent":12,"rejected":2}]}}"#;
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let leaked: &'static str = Box::leak(response.into_boxed_str());
+    let (base_url, _) = server(vec![leaked]);
+    let client = ViaPost::builder("vp_test")
+        .base_url(base_url)
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let metrics = client
+        .messages()
+        .metrics(MetricsParams::default())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        metrics.deliverability.providers[0].provider,
+        DeliverabilityProviderName::Gmail
+    );
+    assert_eq!(metrics.deliverability.rejections.policy_block, 3);
+    assert_eq!(
+        metrics.deliverability.problem_domains[0].primary_reason,
+        DeliverabilityRejectionCause::PolicyBlock
+    );
+    assert_eq!(metrics.deliverability.volume[0].rejected, 2);
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn tracking_domain_operations_follow_the_public_contract() {
+    let tracking_domain = r#"{"id":"22222222-2222-2222-2222-222222222222","hostname":"click.example.com","state":"pending_proof","proof_expires_at":"2026-10-01T00:00:00Z","proof_verified_at":null,"last_checked_at":null,"activated_at":null,"suspended_at":null,"revoked_at":null,"created_at":"2026-09-30T00:00:00Z","updated_at":"2026-09-30T00:00:00Z"}"#;
+    let list = format!(r#"{{"tracking_domains":[{tracking_domain}]}}"#);
+    let proof = format!(
+        r#"{{"tracking_domain":{tracking_domain},"proof":{{"type":"TXT","name":"_viapost.click.example.com","value":"vp-proof-secret"}}}}"#
+    );
+    let detail = format!(r#"{{"tracking_domain":{tracking_domain}}}"#);
+    let responses: Vec<&'static str> = [
+        ("200 OK", list),
+        ("201 Created", proof.clone()),
+        ("200 OK", detail.clone()),
+        ("200 OK", detail.clone()),
+        ("202 Accepted", detail.clone()),
+        ("200 OK", detail),
+        ("200 OK", proof),
+    ]
+    .into_iter()
+    .map(|(status, body)| {
+        Box::leak(
+            format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        ) as &'static str
+    })
+    .collect();
+    let (base_url, requests) = server(responses);
+    let client = ViaPost::builder("vp_test")
+        .base_url(base_url)
+        .unwrap()
+        .max_retries(2)
+        .build()
+        .unwrap();
+    let domain_id = "11111111-1111-1111-1111-111111111111";
+    let tracking_domain_id = "22222222-2222-2222-2222-222222222222";
+
+    let listed = client
+        .domains()
+        .list_tracking_domains(domain_id)
+        .await
+        .unwrap();
+    assert_eq!(listed.tracking_domains.len(), 1);
+    let created = client
+        .domains()
+        .create_tracking_domain(
+            domain_id,
+            &CreateTrackingDomainRequest {
+                hostname: "click.example.com".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.proof.record_type, "TXT");
+    assert_eq!(
+        created.tracking_domain.state,
+        TrackingDomainState::PendingProof
+    );
+    client
+        .domains()
+        .retrieve_tracking_domain(domain_id, tracking_domain_id)
+        .await
+        .unwrap();
+    client
+        .domains()
+        .verify_tracking_domain(domain_id, tracking_domain_id)
+        .await
+        .unwrap();
+    client
+        .domains()
+        .activate_tracking_domain(domain_id, tracking_domain_id)
+        .await
+        .unwrap();
+    client
+        .domains()
+        .revoke_tracking_domain(domain_id, tracking_domain_id)
+        .await
+        .unwrap();
+    let rotated = client
+        .domains()
+        .rotate_tracking_domain_proof(domain_id, tracking_domain_id)
+        .await
+        .unwrap();
+    assert_eq!(rotated.proof.value, "vp-proof-secret");
+
+    let captured = requests.lock().unwrap();
+    assert_eq!(captured.len(), 7);
+    let domain_path = "11111111%2D1111%2D1111%2D1111%2D111111111111";
+    let tracking_path = "22222222%2D2222%2D2222%2D2222%2D222222222222";
+    assert!(captured[0].starts_with(&format!("GET /v1/domains/{domain_path}/tracking-domains ")));
+    assert!(captured[1].starts_with(&format!("POST /v1/domains/{domain_path}/tracking-domains ")));
+    assert!(captured[1].ends_with(r#"{"hostname":"click.example.com"}"#));
+    assert!(captured[2].starts_with(&format!(
+        "GET /v1/domains/{domain_path}/tracking-domains/{tracking_path} "
+    )));
+    for (request, suffix) in [
+        (&captured[3], "/verify"),
+        (&captured[4], "/activate"),
+        (&captured[5], "/revoke"),
+        (&captured[6], "/proof/rotate"),
+    ] {
+        assert!(request.starts_with(&format!(
+            "POST /v1/domains/{domain_path}/tracking-domains/{tracking_path}{suffix} "
+        )));
+        assert!(!request.to_ascii_lowercase().contains("idempotency-key:"));
+    }
+}
+
+#[tokio::test]
+async fn tracking_domain_mutations_are_not_retried() {
+    let (base_url, requests) = server(vec![
+        "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 23\r\nConnection: close\r\n\r\n{\"error\":\"unavailable\"}",
+    ]);
+    let client = ViaPost::builder("vp_test")
+        .base_url(base_url)
+        .unwrap()
+        .max_retries(2)
+        .build()
+        .unwrap();
+
+    let error = client
+        .domains()
+        .create_tracking_domain(
+            "11111111-1111-1111-1111-111111111111",
+            &CreateTrackingDomainRequest {
+                hostname: "click.example.com".to_owned(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, Error::Api { status: 503, .. }));
+    assert_eq!(requests.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
