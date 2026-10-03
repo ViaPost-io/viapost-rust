@@ -11,11 +11,11 @@ use viapost::{
     BatchSendMessage, BatchSendRequest, ClientBuilder, CreateTrackingDomainRequest,
     CreateWebhookRequest, CreateWebhookResponse, DeliverabilityProblemDomain,
     DeliverabilityProviderName, DeliverabilityRejectionCause, EmailStream, Error, Message,
-    MessageDetail, MessageListParams, MessageTimelineEvent, MessageTimelinePage,
-    MessageTimelineParams, MetricsParams, SegmentDefinition, SegmentPreviewRequest, SendRequest,
-    TemplateAssetPolicy, TemplatePreconditionRequest, TrackingDomain, TrackingDomainProof,
-    TrackingDomainProofResponse, TrackingDomainState, UpdateWebhookRequest, ViaPost,
-    WebhookDeliveryListParams, WebhookEndpoint,
+    MessageDetail, MessageListParams, MessageTimelineEvent, MessageTimelineOptInEvent,
+    MessageTimelineOptInParams, MessageTimelinePage, MessageTimelineParams, MetricsParams,
+    SegmentDefinition, SegmentPreviewRequest, SendRequest, TemplateAssetPolicy,
+    TemplatePreconditionRequest, TrackingDomain, TrackingDomainProof, TrackingDomainProofResponse,
+    TrackingDomainState, UpdateWebhookRequest, ViaPost, WebhookDeliveryListParams, WebhookEndpoint,
 };
 
 fn server(responses: Vec<&'static str>) -> (String, Arc<Mutex<Vec<String>>>) {
@@ -639,6 +639,53 @@ fn timeline_debug_redacts_delivery_metadata() {
         assert!(!debug.contains(secret));
     }
     assert!(debug.contains("[REDACTED]"));
+}
+
+#[tokio::test]
+async fn mixed_timeline_has_typed_sources_and_inbound_query() {
+    let (base_url, requests) = server(vec![
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"data\":[{\"id\":\"outbound-event\",\"source\":\"outbound\",\"message_id\":\"outbound-message\",\"type\":\"delivered\",\"occurred_at\":\"2026-10-03T00:00:00Z\",\"recipient\":\"private@example.com\"},{\"id\":\"inbound-event\",\"source\":\"inbound\",\"inbound_message_id\":\"inbound-message\",\"type\":\"inbound.received\",\"occurred_at\":\"2026-10-02T00:00:00Z\"}],\"next_cursor\":\"v2-cursor\"}",
+    ]);
+    let client = ViaPost::builder("vp_test")
+        .base_url(base_url)
+        .unwrap()
+        .build()
+        .unwrap();
+    let page = client
+        .messages()
+        .timeline_with_inbound(MessageTimelineOptInParams {
+            event_type: Some("inbound.received".to_owned()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        matches!(&page.data[0], MessageTimelineOptInEvent::Outbound(event) if event.message_id == "outbound-message")
+    );
+    assert!(
+        matches!(&page.data[1], MessageTimelineOptInEvent::Inbound(event) if event.inbound_message_id == "inbound-message")
+    );
+    assert_eq!(page.next_cursor.as_deref(), Some("v2-cursor"));
+    assert!(!format!("{page:?}").contains("private@example.com"));
+    let captured = requests.lock().unwrap();
+    assert!(captured[0].starts_with("GET /v1/messages/events?"));
+    assert!(captured[0].contains("include=inbound"));
+    assert!(captured[0].contains("type=inbound.received"));
+}
+
+#[tokio::test]
+async fn inbound_filter_requires_opt_in_timeline() {
+    let client = ViaPost::new("vp_test").unwrap();
+    assert!(matches!(
+        client
+            .messages()
+            .timeline(MessageTimelineParams {
+                event_type: Some("inbound.received".to_owned()),
+                ..Default::default()
+            })
+            .await,
+        Err(Error::Validation(_))
+    ));
 }
 
 #[tokio::test]

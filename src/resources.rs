@@ -74,9 +74,18 @@ fn validate_batch_send(request: &BatchSendRequest) -> Result<(), Error> {
     Ok(())
 }
 
-fn validate_timeline_params(params: &MessageTimelineParams) -> Result<(), Error> {
-    if params.cursor.as_ref().is_some_and(String::is_empty) {
-        return Err(Error::Validation("cursor must not be empty".into()));
+fn validate_timeline_params(
+    params: &MessageTimelineParams,
+    include_inbound: bool,
+) -> Result<(), Error> {
+    if params
+        .cursor
+        .as_ref()
+        .is_some_and(|cursor| cursor.is_empty() || cursor.len() > 512)
+    {
+        return Err(Error::Validation(
+            "cursor must contain between 1 and 512 bytes".into(),
+        ));
     }
     if params
         .limit
@@ -94,7 +103,7 @@ fn validate_timeline_params(params: &MessageTimelineParams) -> Result<(), Error>
         ));
     }
     if params.event_type.as_deref().is_some_and(|event_type| {
-        !matches!(
+        !(matches!(
             event_type,
             "queued"
                 | "sent"
@@ -109,7 +118,7 @@ fn validate_timeline_params(params: &MessageTimelineParams) -> Result<(), Error>
                 | "rejected"
                 | "failed"
                 | "suppressed"
-        )
+        ) || (include_inbound && event_type == "inbound.received"))
     }) {
         return Err(Error::Validation(
             "event_type is not supported by the public contract".into(),
@@ -658,7 +667,7 @@ impl<'a> MessagesResource<'a> {
         &self,
         params: MessageTimelineParams,
     ) -> Result<MessageTimelinePage, Error> {
-        validate_timeline_params(&params)?;
+        validate_timeline_params(&params, false)?;
         self.client
             .request(
                 Method::GET,
@@ -667,6 +676,31 @@ impl<'a> MessagesResource<'a> {
                 None,
                 None,
             )
+            .await
+    }
+    /// Returns the mixed timeline. Requires `messages:read` and `inbound:read`.
+    /// Its cursors are distinct from the outbound-only timeline cursors.
+    pub async fn timeline_with_inbound(
+        &self,
+        params: MessageTimelineOptInParams,
+    ) -> Result<MessageTimelineOptInPage, Error> {
+        validate_timeline_params(
+            &MessageTimelineParams {
+                cursor: params.cursor.clone(),
+                limit: params.limit,
+                period: params.period.clone(),
+                event_type: params.event_type.clone(),
+                message_id: None,
+            },
+            true,
+        )?;
+        let mut query = ViaPost::body(&params)?;
+        query
+            .as_object_mut()
+            .ok_or_else(|| Error::Validation("timeline filters must be an object".into()))?
+            .insert("include".into(), Value::String("inbound".into()));
+        self.client
+            .request(Method::GET, "/v1/messages/events", Some(query), None, None)
             .await
     }
     pub async fn cancel(&self, message_id: &str) -> Result<Message, Error> {
