@@ -966,6 +966,20 @@ pub struct MessageTimelineParams {
     pub message_id: Option<String>,
 }
 
+/// Filters for the mixed outbound and inbound timeline. This mode requires
+/// both `messages:read` and `inbound:read` scopes and uses a separate cursor.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MessageTimelineOptInParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
+}
+
 #[derive(Clone, Deserialize)]
 pub struct MessageTimelineEvent {
     pub id: String,
@@ -1012,6 +1026,47 @@ impl fmt::Debug for MessageTimelinePage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("MessageTimelinePage")
+            .field("data", &"[REDACTED]")
+            .field("next_cursor", &self.next_cursor)
+            .finish()
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(tag = "source", rename_all = "lowercase")]
+pub enum MessageTimelineOptInEvent {
+    Outbound(MessageTimelineEvent),
+    Inbound(MessageTimelineInboundEvent),
+}
+
+impl fmt::Debug for MessageTimelineOptInEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Outbound(event) => formatter.debug_tuple("Outbound").field(event).finish(),
+            Self::Inbound(event) => formatter.debug_tuple("Inbound").field(event).finish(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MessageTimelineInboundEvent {
+    pub id: String,
+    pub inbound_message_id: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub occurred_at: String,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct MessageTimelineOptInPage {
+    pub data: Vec<MessageTimelineOptInEvent>,
+    pub next_cursor: Option<String>,
+}
+
+impl fmt::Debug for MessageTimelineOptInPage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MessageTimelineOptInPage")
             .field("data", &"[REDACTED]")
             .field("next_cursor", &self.next_cursor)
             .finish()

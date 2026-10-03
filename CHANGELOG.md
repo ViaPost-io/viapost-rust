@@ -8,12 +8,14 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 - Typed tracking-domain lifecycle operations under the domains resource.
 - Deliverability provider, rejection, problem-domain and daily-volume metrics.
+- Typed opt-in inbound message timeline with separate v2 cursors.
 
 ### Changed
 
 - `MetricsResponse` now includes the canonical required `deliverability` field. This is additive on
   the wire but source-incompatible for consumers constructing the public struct with a literal.
-- Updated the vendored public OpenAPI contract to ViaPost `base-code` commit `2c2eee4`.
+- Updated the vendored public OpenAPI contract to ViaPost `base-code` commit `866e00f`,
+  including tracking `verified_at` in the public status projection.
 
 ## [0.1.1] - 2026-09-16
 
