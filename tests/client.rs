@@ -15,7 +15,8 @@ use viapost::{
     MessageTimelineOptInParams, MessageTimelinePage, MessageTimelineParams, MetricsParams,
     SegmentDefinition, SegmentPreviewRequest, SendRequest, TemplateAssetPolicy,
     TemplatePreconditionRequest, TrackingDomain, TrackingDomainProof, TrackingDomainProofResponse,
-    TrackingDomainState, UpdateWebhookRequest, ViaPost, WebhookDeliveryListParams, WebhookEndpoint,
+    TrackingDomainState, UpdateWebhookRequest, ViaPost, WebhookDeliveryFilters, WebhookEndpoint,
+    WebhookListParams,
 };
 
 fn server(responses: Vec<&'static str>) -> (String, Arc<Mutex<Vec<String>>>) {
@@ -990,13 +991,15 @@ async fn webhook_management_and_delivery_operations_follow_the_contract() {
 
     let page = client
         .webhooks()
-        .deliveries(
+        .deliveries_with_filters(
             webhook_id,
-            WebhookDeliveryListParams {
+            WebhookDeliveryFilters {
                 cursor: Some("opaque cursor".to_owned()),
                 limit: Some(25),
                 status: Some("delivered".to_owned()),
                 event_type: Some("delivered".to_owned()),
+                response_code: Some(500),
+                delivery_id: Some(delivery_id.to_owned()),
             },
         )
         .await
@@ -1039,6 +1042,8 @@ async fn webhook_management_and_delivery_operations_follow_the_contract() {
     assert!(captured[0].contains("\"expected_version\":1"));
     assert!(captured[1].contains("cursor=opaque+cursor"));
     assert!(captured[1].contains("limit=25"));
+    assert!(captured[1].contains("response_code=500"));
+    assert!(captured[1].contains("delivery_id=22222222-2222-2222-2222-222222222222"));
     assert!(captured[2].starts_with("GET /v1/webhooks/"));
     assert!(captured[2].contains("/deliveries/22222222%2D2222%2D2222%2D2222%2D222222222222"));
     assert!(captured[3].starts_with("POST /v1/webhooks/"));
@@ -1057,6 +1062,102 @@ async fn webhook_management_and_delivery_operations_follow_the_contract() {
             .contains(&format!("idempotency-key: {key}")));
         assert!(request.ends_with("{}"));
     }
+}
+
+#[tokio::test]
+async fn webhook_list_filters_follow_the_public_contract() {
+    let response = r#"{"webhooks":[],"next_cursor":"next-page"}"#;
+    let response: &'static str = Box::leak(
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+            response.len()
+        )
+        .into_boxed_str(),
+    );
+    let (base_url, requests) = server(vec![response]);
+    let client = ViaPost::builder("vp_test")
+        .base_url(base_url)
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let page = client
+        .webhooks()
+        .list_with_params(&WebhookListParams {
+            q: Some("billing".into()),
+            enabled: Some(true),
+            cursor: Some("current-page".into()),
+            limit: Some(25),
+            sort: Some("created_at_asc".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.next_cursor.as_deref(), Some("next-page"));
+
+    let captured = requests.lock().unwrap();
+    assert!(captured[0].starts_with("GET /v1/webhooks?"));
+    assert!(captured[0].contains("q=billing"));
+    assert!(captured[0].contains("enabled=true"));
+    assert!(captured[0].contains("cursor=current-page"));
+    assert!(captured[0].contains("limit=25"));
+    assert!(captured[0].contains("sort=created_at_asc"));
+}
+
+#[tokio::test]
+async fn legacy_webhook_list_collects_all_pages() {
+    let endpoint = r#"{"id":"11111111-1111-1111-1111-111111111111","url":"https://example.com/hook","event_types":["delivered"],"enabled":true,"max_attempts":8,"consecutive_failures":0,"disabled_at":null,"secret_rotated_at":null,"version":1,"created_at":"2026-09-16T00:00:00Z","updated_at":"2026-09-16T00:00:00Z"}"#;
+    let first = format!(r#"{{"webhooks":[{endpoint}],"next_cursor":"page-2"}}"#);
+    let second = format!(r#"{{"webhooks":[{endpoint}]}}"#);
+    let responses = [first, second]
+        .into_iter()
+        .map(|body| {
+            Box::leak(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .into_boxed_str(),
+            ) as &'static str
+        })
+        .collect();
+    let (base_url, requests) = server(responses);
+    let client = ViaPost::builder("vp_test")
+        .base_url(base_url)
+        .unwrap()
+        .build()
+        .unwrap();
+
+    let list = client.webhooks().list().await.unwrap();
+    assert_eq!(list.webhooks.len(), 2);
+    let captured = requests.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert!(captured[0].starts_with("GET /v1/webhooks "));
+    assert!(captured[1].starts_with("GET /v1/webhooks?cursor=page-2"));
+}
+
+#[tokio::test]
+async fn legacy_webhook_list_rejects_repeated_cursor() {
+    let body = r#"{"webhooks":[],"next_cursor":"repeated"}"#;
+    let response: &'static str = Box::leak(
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_boxed_str(),
+    );
+    let (base_url, requests) = server(vec![response, response]);
+    let client = ViaPost::builder("vp_test")
+        .base_url(base_url)
+        .unwrap()
+        .build()
+        .unwrap();
+
+    assert!(matches!(
+        client.webhooks().list().await,
+        Err(Error::Validation(_))
+    ));
+    assert_eq!(requests.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
