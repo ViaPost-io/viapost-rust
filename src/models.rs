@@ -710,6 +710,32 @@ pub struct WebhookList {
     pub webhooks: Vec<WebhookEndpoint>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebhookListPage {
+    pub webhooks: Vec<WebhookEndpoint>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct WebhookListParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub q: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort: Option<String>,
+}
+
 #[derive(Clone, Serialize)]
 pub struct CreateWebhookRequest {
     pub url: String,
@@ -763,6 +789,22 @@ pub struct WebhookDeliveryListParams {
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct WebhookDeliveryFilters {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_code: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

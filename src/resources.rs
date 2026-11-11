@@ -499,6 +499,46 @@ fn validate_webhook_delivery_params(params: &WebhookDeliveryListParams) -> Resul
     Ok(())
 }
 
+fn validate_webhook_delivery_filters(params: &WebhookDeliveryFilters) -> Result<(), Error> {
+    validate_webhook_delivery_params(&WebhookDeliveryListParams {
+        cursor: params.cursor.clone(),
+        limit: params.limit,
+        status: params.status.clone(),
+        event_type: params.event_type.clone(),
+    })?;
+    if params
+        .response_code
+        .is_some_and(|response_code| !(100..=599).contains(&response_code))
+    {
+        return Err(Error::Validation(
+            "response_code must be between 100 and 599".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_webhook_list_params(params: &WebhookListParams) -> Result<(), Error> {
+    if params.cursor.as_ref().is_some_and(String::is_empty) {
+        return Err(Error::Validation("cursor must not be empty".into()));
+    }
+    if params
+        .limit
+        .is_some_and(|limit| !(1..=100).contains(&limit))
+    {
+        return Err(Error::Validation("limit must be between 1 and 100".into()));
+    }
+    if params
+        .sort
+        .as_deref()
+        .is_some_and(|sort| !matches!(sort, "created_at_desc" | "created_at_asc"))
+    {
+        return Err(Error::Validation(
+            "sort must be created_at_desc or created_at_asc".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn idempotency_headers(key: &str) -> Result<HeaderMap, Error> {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -1162,8 +1202,50 @@ impl<'a> WebhooksResource<'a> {
         Self { client }
     }
     pub async fn list(&self) -> Result<WebhookList, Error> {
+        let mut webhooks = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut seen_cursors = std::collections::HashSet::new();
+        loop {
+            let query = cursor
+                .as_ref()
+                .map(|value| {
+                    ViaPost::body(&WebhookListParams {
+                        cursor: Some(value.clone()),
+                        ..Default::default()
+                    })
+                })
+                .transpose()?;
+            let page: WebhookListPage = self
+                .client
+                .request(Method::GET, "/v1/webhooks", query, None, None)
+                .await?;
+            webhooks.extend(page.webhooks);
+            match page.next_cursor {
+                Some(next_cursor) => {
+                    if next_cursor.is_empty() || !seen_cursors.insert(next_cursor.clone()) {
+                        return Err(Error::Validation(
+                            "webhook pagination repeated an invalid cursor".into(),
+                        ));
+                    }
+                    cursor = Some(next_cursor);
+                }
+                None => return Ok(WebhookList { webhooks }),
+            }
+        }
+    }
+    pub async fn list_with_params(
+        &self,
+        params: &WebhookListParams,
+    ) -> Result<WebhookListPage, Error> {
+        validate_webhook_list_params(params)?;
         self.client
-            .request(Method::GET, "/v1/webhooks", None, None, None)
+            .request(
+                Method::GET,
+                "/v1/webhooks",
+                Some(ViaPost::body(params)?),
+                None,
+                None,
+            )
             .await
     }
     pub async fn create(
@@ -1211,6 +1293,23 @@ impl<'a> WebhooksResource<'a> {
         params: WebhookDeliveryListParams,
     ) -> Result<WebhookDeliveryPage, Error> {
         validate_webhook_delivery_params(&params)?;
+        let id = path_parameter("webhook_id", webhook_id)?;
+        self.client
+            .request(
+                Method::GET,
+                &format!("/v1/webhooks/{id}/deliveries"),
+                Some(ViaPost::body(&params)?),
+                None,
+                None,
+            )
+            .await
+    }
+    pub async fn deliveries_with_filters(
+        &self,
+        webhook_id: &str,
+        params: WebhookDeliveryFilters,
+    ) -> Result<WebhookDeliveryPage, Error> {
+        validate_webhook_delivery_filters(&params)?;
         let id = path_parameter("webhook_id", webhook_id)?;
         self.client
             .request(

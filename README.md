@@ -90,8 +90,8 @@ may be submitted more than once. Mutating calls are never retried by the SDK.
 ## Contract
 
 `openapi.yaml` is vendored from ViaPost `base-code` commit
-`b26db96bca4586b42bd6e2d7741e29bb12f411b1` with SHA-256
-`96f2fa883334ff15400f51f43bee917e690030e8f3e31b1d8dcdcca2782ab77b`.
+`f0f33d678b5cd2a9db5ca69b881c373afb3833f9` with SHA-256
+`a58782a840d21315907466baa86734f6bbec8cc5007a6e8ac3fa79c8b94e53d4`.
 
 ## License
 
